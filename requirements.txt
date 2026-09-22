@@ -1,0 +1,5 @@
+gurobipy>=11.0
+numpy>=1.24
+pandapower>=3.5
+matplotlib>=3.9
+ipykernel>=6.0

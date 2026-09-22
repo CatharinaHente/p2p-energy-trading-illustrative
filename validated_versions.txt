@@ -1,0 +1,5 @@
+Python 3.14.5
+gurobipy==13.0.3
+numpy==2.4.6
+pandapower==3.5.4
+ipykernel==7.3.0
