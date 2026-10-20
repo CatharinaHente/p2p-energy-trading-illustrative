@@ -7,6 +7,7 @@ from scenarios import make_scenario, prosumer_summary
 from network import evaluate_feeder
 from plots import (plot_for, plot_prices, plot_trades,
                    plot_network, plot_balance, plot_devices)
+from metrics import no_trade_costs, savings, print_metrics
 
 ROOT = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 
@@ -22,7 +23,7 @@ CASES = [
 ]
 
 # ── Data ──────────────────────────────────────────────────────────────────────
-data    = make_scenario(SEASON)
+data    = make_scenario(SEASON, seed=42)
 results = {}
 
 print("\nProsumer configuration:")
@@ -99,7 +100,7 @@ SOLVERS = {
     'distributed':        lambda: distributed(data),
     'centralized_network':lambda: centralized(data, with_network=True),
     'distributed_network':lambda: distributed(data, with_network=True,
-                                               rho=5.0, tolerance=1e-3),
+                                               rho=2.0, tolerance=1e-3, max_iterations = 5000),
 }
 
 for case in CASES:
@@ -110,7 +111,6 @@ for case in CASES:
         _run(case, SOLVERS[case]())
     else:
         print(f"  Skipping {case}")
-
 
 # ── Verification ──────────────────────────────────────────────────────────────
 
