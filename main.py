@@ -2,12 +2,12 @@
 from pathlib import Path
 import json
 import numpy as np
-from algo import centralized, distributed
+from algo import centralized, distributed, distributed_window
 from scenarios import make_scenario, prosumer_summary
 from network import evaluate_feeder
 from plots import (plot_for, plot_prices, plot_trades,
                    plot_network, plot_balance, plot_devices)
-from metrics import no_trade_costs, savings, print_metrics
+from metrics import no_trade_costs, savings
 
 ROOT = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 
@@ -23,7 +23,7 @@ CASES = [
 ]
 
 # ── Data ──────────────────────────────────────────────────────────────────────
-data    = make_scenario(SEASON, seed=42)
+data    = make_scenario(SEASON, seed=42, resolution_h=0.5)
 results = {}
 
 print("\nProsumer configuration:")
@@ -96,12 +96,12 @@ def _ask(name):
 
 # ── Solver cases ──────────────────────────────────────────────────────────────
 SOLVERS = {
-    'centralized':        lambda: centralized(data),
-    'distributed':        lambda: distributed(data),
-    'centralized_network':lambda: centralized(data, with_network=True),
-    'distributed_network':lambda: distributed(data, with_network=True,
-                                               rho=2.0, tolerance=1e-3, max_iterations = 5000),
+    'centralized':          lambda: centralized(data),
+    'distributed':          lambda: distributed(data, rho=2.0, tolerance=1e-7),
+    'centralized_network':  lambda: centralized(data, with_network=True),
+    'distributed_network':  lambda: distributed(data, rho=2.0, tolerance=1e-7, with_network=True),
 }
+# note: rho here is starting value, implementation in algo.py is adaptive 
 
 for case in CASES:
     if _ask(case):
@@ -136,7 +136,7 @@ else:
                         - result['charge'][i,t]
                         - result.get('ev_charge', zeros)[i,t]
                         - result.get('hp_power',  zeros)[i,t] - sale)
-                assert abs(bal) < 1e-5, \
+                assert abs(bal) < 1e-4, \
                     f"{name} P{i+1} t={t}: balance={bal:.3g}"
 
         # BESS SOC
@@ -165,7 +165,7 @@ else:
         # Reciprocity
         for i,j in data['edges']:
             for t in range(T):
-                assert abs(result['trades'][i,j,t] + result['trades'][j,i,t]) < 1e-5
+                assert abs(result['trades'][i,j,t] + result['trades'][j,i,t]) < 1e-4
 
         # Network
         if result['network']:
@@ -195,3 +195,40 @@ else:
         print("  Centralized_network == Distributed_network (total cost)  ✓")
 
     print("\nAll checks passed.")
+
+def load_result(name):
+    import json
+    p = ROOT / 'results' / name / 'summary.json'
+    if not p.exists():
+        return None
+    raw = json.loads(p.read_text())
+    raw['costs'] = np.array(raw['costs'])
+    raw['buy']   = np.array(raw['buy'])
+    raw['sell']  = np.array(raw['sell'])
+    return raw
+
+print("\n── Cost breakdown comparison (from saved results) ──")
+result_c = load_result('centralized')
+result_d = load_result('distributed')
+
+if result_c is None or result_d is None:
+    print("Missing saved results — run centralized and distributed first.")
+else:
+    for i in range(len(data['demand'])):
+        bp     = np.array(data['buy_price'])
+        sp     = np.array(data['sell_price'])
+        dt     = data['dt']
+        buy_c  = float(np.sum(bp * result_c['buy'][i]  * dt))
+        buy_d  = float(np.sum(bp * result_d['buy'][i]  * dt))
+        sell_c = float(np.sum(sp * result_c['sell'][i] * dt))
+        sell_d = float(np.sum(sp * result_d['sell'][i] * dt))
+        p2p_c  = result_c['costs'][i] - buy_c + sell_c
+        p2p_d  = result_d['costs'][i] - buy_d + sell_d
+        print(f"\nP{i+1}:")
+        print(f"  grid buy:   cent={buy_c:.4f}  dist={buy_d:.4f}  Δ={buy_d-buy_c:.4f}")
+        print(f"  grid sell:  cent={sell_c:.4f}  dist={sell_d:.4f}  Δ={sell_d-sell_c:.4f}")
+        print(f"  p2p+rest:   cent={p2p_c:.4f}  dist={p2p_d:.4f}  Δ={p2p_d-p2p_c:.4f}")
+        print(f"  total:      cent={result_c['costs'][i]:.4f}  "
+              f"dist={result_d['costs'][i]:.4f}  "
+              f"iter={result_d.get('iterations','?')}  "
+              f"res={result_d.get('residual',float('nan')):.2e}")

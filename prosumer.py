@@ -65,7 +65,8 @@ def add_prosumer(model, i, data):
                         ub=data['soc_max_fraction'] * data['battery_capacity'][i],
                         name=f'soc_{i}')
     model.addConstr(soc[0] == data['initial_soc'][i])
-    model.addConstr(soc[T] == soc[0])
+    if data.get('cyclic_soc', True):        # only enforce in last window
+        model.addConstr(soc[T] == soc[0])
     for t in range(T):
         _polygon(model, discharge[t] - charge[t], q_batt[t], s_batt, n_batt)
         model.addConstr(                                               # lossless SOC
@@ -99,7 +100,8 @@ def add_prosumer(model, i, data):
         ev_q         = model.addVars(T, lb=-s_ev, ub=s_ev,                 name=f'ev_q_{i}')
         ev_soc       = model.addVars(T + 1, lb=ev_soc_floor, ub=ev_cap_eff, name=f'ev_soc_{i}')
         model.addConstr(ev_soc[0] == data['ev_initial_soc'][i])
-        model.addConstr(ev_soc[T] == ev_soc[0])
+        if data.get('cyclic_soc', True):    # only enforce in last window
+            model.addConstr(ev_soc[T] == ev_soc[0])
 
         for t in range(T):
             av = data['ev_availability'][i][t]
@@ -116,8 +118,11 @@ def add_prosumer(model, i, data):
 
         soc_dep = data.get('ev_soc_min_departure', [0.0] * N)[i] * ev_cap_eff
         for t in range(T):                                             # Huaman-Rivera eq (2)
-            if data['ev_availability'][i][t] == 1 and \
-               data['ev_availability'][i][(t+1) % T] == 0:
+            # Use t+1 < T (no wrap) so constraint does not fire incorrectly
+            # at sliding window boundaries — wrap is only valid for full day
+            if t + 1 < T and \
+               data['ev_availability'][i][t] == 1 and \
+               data['ev_availability'][i][t+1] == 0:
                 model.addConstr(ev_soc[t+1] >= soc_dep)
     else:
         ev_charge = ev_discharge = model.addVars(T, ub=0, name=f'ev_off_{i}')
@@ -171,7 +176,10 @@ def add_prosumer(model, i, data):
             - data['demand'][i][t] * tan_load)      # load: fixed pf, inductive
 
     # --- Cost ---
-    q_cost = data.get('q_cost', 0.0)   # EUR/kVAR²·h — regularises Q, prevents extreme values
+    q_cost = data.get('q_cost', 0.0)   # EUR/kVAR²·h — regularises Q, breaks Q degeneracy
+    p_cost = data.get('p_cost', 0.0)   # EUR/kW²·h  — regularises P, breaks P degeneracy
+    # p_cost should be small so it does not materially affect economics
+    # but large enough to select a unique point on the flat optimal face
     cost = (
         data['dt'] * gp.quicksum(
             data['buy_price'][t]  * buy[t]
@@ -181,6 +189,9 @@ def add_prosumer(model, i, data):
             + data.get('ev_cost',  0.0) * (ev_charge[t] + ev_discharge[t])
             + data.get('hp_cost',  0.0) * hp_power[t]
             + q_cost * (q_batt[t]*q_batt[t] + q_pv[t]*q_pv[t] + ev_q[t]*ev_q[t])
+            + + p_cost * (charge[t]*charge[t] + discharge[t]*discharge[t]
+            + ev_charge[t]*ev_charge[t] + ev_discharge[t]*ev_discharge[t]
+            + gp.quicksum(trade[j,t]*trade[j,t] for j in peers))
             for t in range(T))
         + data['dt'] * data['trade_fee'] * trade_abs.sum())
 
