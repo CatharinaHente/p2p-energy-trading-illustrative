@@ -353,9 +353,8 @@ def make_scenario(season='winter', seed=42, resolution_h=0.5):
         cap_eff = p['ev_capacity_kwh'] * (0.80 if season == 'winter' else 1.00)
         ev_cap.append(p['ev_capacity_kwh'])
         if p.get('ev_profile'):
-            prof = p['ev_profile']
             all_ev = {**EV_HOME_PROFILES, **EV_WORK_PROFILES}
-            ev_kw  = all_ev[prof]['power_kw'] if prof in all_ev else float(prof.split('_')[2])
+            ev_kw  = all_ev[p['ev_profile']]['power_kw']
         else:
             ev_kw  = 0.0
         ev_pow.append(ev_kw)
@@ -378,7 +377,8 @@ def make_scenario(season='winter', seed=42, resolution_h=0.5):
 
             avail = _avail(avail_96)
 
-            # Driving load: 35km/day × seasonal kWh/km distributed over away steps
+            # Driving load: 35km/day × seasonal kWh/km
+            # Distributed uniformly across all away steps (Huaman-Rivera eq 1)
             consump  = 0.17 if season == 'winter' else 0.15
             daily_e  = 35.0 * consump
             away_96  = np.where(avail_96 == 0)[0]
@@ -404,7 +404,7 @@ def make_scenario(season='winter', seed=42, resolution_h=0.5):
     data = dict(
         demand        = demand,
         generation    = generation,
-        edges         = [(0,1),(1,2),(2,3), (3,0)], 
+        edges         = [(0,1),(1,2),(2,3),(0,3)],
         agent_bus     = [p['bus'] for p in _PROSUMERS],
         buy_price     = buy_price,
         sell_price    = sell_price,
@@ -454,8 +454,8 @@ def make_scenario(season='winter', seed=42, resolution_h=0.5):
         # Load reactive
         pf_load               = 0.95,
         # Regularisation
-        q_cost                = 1e-3,   # EUR/kVAR²·h — breaks Q degeneracy
-        p_cost                = 1e-3,   # EUR/kW²·h  — breaks P degeneracy
+        q_cost                = 1e-4,   # EUR/kVAR²·h — breaks Q degeneracy
+        p_cost                = 1e-6,   # EUR/kW²·h  — breaks P degeneracy
         # Metadata
         season                = season,
         resolution_h          = resolution_h,

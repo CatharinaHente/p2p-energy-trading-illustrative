@@ -25,8 +25,10 @@ def _model(name):
 
 def _optimize(model):
     model.optimize()
-    if model.Status != gp.GRB.OPTIMAL:
+    if model.Status not in (gp.GRB.OPTIMAL, gp.GRB.SUBOPTIMAL):
         raise RuntimeError(f'{model.ModelName}: status {model.Status}')
+    if model.Status == gp.GRB.SUBOPTIMAL:
+        print(f"  ⚠ {model.ModelName}: suboptimal solution accepted")
 
 
 # ── Result assembly ───────────────────────────────────────────────────────────
@@ -97,7 +99,13 @@ def _network_values(p_flow, q_flow, voltage, grid, line_limit_mva):
 # ── Solvers ───────────────────────────────────────────────────────────────────
 
 def centralized(data, with_network=False):
-    """Social-cost minimiser. Returns result dict."""
+    """Social-cost minimiser. Returns result dict.
+
+    Individual rationality (IR) is enforced via data['ir_bound'] — a list of
+    per-prosumer cost upper bounds (J_nt[i] + slack) set in main.py before
+    calling the solver. The constraint is added inside add_prosumer in
+    prosumer.py, so it applies to both centralized and distributed.
+    """
     model = _model('centralized')
     N, T  = len(data['demand']), len(data['buy_price'])
     try:
@@ -260,6 +268,176 @@ def distributed(data, with_network=False,
 
 
 # ── Sliding-window wrappers ───────────────────────────────────────────────────
+
+def debug_window(data, window_h=3.0, with_network=False, window_index=None):
+    """Run centralized on each sliding window and perform IIS analysis if infeasible.
+
+    For each window that fails, computes the Irreducible Infeasible Subsystem (IIS)
+    and prints exactly which constraints and variable bounds are violated.
+    This is the diagnostic tool to identify whether infeasibility is caused by:
+      - SOC bounds (BESS drained too low in previous window)
+      - EV DoD floor (driving load exceeds remaining capacity)
+      - HP temperature bounds (thermal demand too large for initial temperature)
+      - Energy balance (generation + storage cannot meet demand)
+      - Departure SOC constraint (EV must reach minimum SOC before leaving)
+
+    Parameters
+    ----------
+    data         : dict   full-day scenario data
+    window_h     : float  window size in hours
+    with_network : bool   enforce feeder constraints
+    window_index : int    if set, only debug this specific window (1-indexed)
+    """
+    T   = len(data['buy_price'])
+    dt  = data['dt']
+    N   = len(data['demand'])
+    Tw  = int(round(window_h / dt))
+    nw  = T // Tw
+
+    assert nw * Tw == T, f"window_h={window_h}h not divisible into T={T} steps."
+
+    print(f"\nDebug sliding window: {nw} × {window_h}h ({Tw} steps)")
+    print(f"{'─'*60}")
+
+    soc_now    = list(data['initial_soc'])
+    ev_soc_now = list(data.get('ev_initial_soc', [0.0]*N))
+    T_now      = list(data.get('hp_T_init', [20.0]*N))
+
+    for w in range(nw):
+        t0, t1  = w*Tw, (w+1)*Tw
+        is_last = (w == nw-1)
+
+        if window_index is not None and w+1 != window_index:
+            # Fast-forward state without solving
+            data_w = _slice_data(data, t0, t1, Tw)
+            data_w.update({'initial_soc': list(soc_now),
+                           'ev_initial_soc': list(ev_soc_now),
+                           'hp_T_init': list(T_now),
+                           'cyclic_soc': is_last})
+            try:
+                r = centralized(data_w, with_network=with_network)
+                for i in range(N):
+                    if data['battery_capacity'][i] > 0:
+                        soc_now[i] = float(r['soc'][i,-1])
+                    if data.get('ev_capacity',[0]*N)[i] > 0:
+                        ev_soc_now[i] = float(r['ev_soc'][i,-1])
+                    if data.get('hp_max_power',[0]*N)[i] > 0 and r['temp'] is not None:
+                        T_now[i] = float(r['temp'][i,-1])
+            except:
+                print(f"  Window {w+1}: already infeasible — cannot forward state")
+                return
+            continue
+
+        print(f"\nWindow {w+1}/{nw}  t=[{t0}:{t1})  h=[{t0*dt:.1f}:{t1*dt:.1f})")
+        print(f"  Initial state entering this window:")
+        for i in range(N):
+            cap    = data['battery_capacity'][i]
+            ev_cap = data.get('ev_capacity',[0]*N)[i]
+            hp_max = data.get('hp_max_power',[0]*N)[i]
+            soc_min = data['soc_min_fraction'] * cap if cap > 0 else 0
+            soc_max = data['soc_max_fraction'] * cap if cap > 0 else 0
+            print(f"    P{i+1}: BESS_soc={soc_now[i]:.3f} kWh "
+                  f"[min={soc_min:.2f}, max={soc_max:.2f}]", end='')
+            if ev_cap > 0:
+                cap_eff = ev_cap * data.get('ev_cap_factor',[1.]*N)[i]
+                floor   = (1-data['ev_dod_max']) * cap_eff
+                print(f"  EV_soc={ev_soc_now[i]:.3f} kWh "
+                      f"[floor={floor:.2f}]", end='')
+            if hp_max > 0:
+                print(f"  T={T_now[i]:.3f}°C "
+                      f"[min={data['hp_T_min']:.1f}, max={data['hp_T_max']:.1f}]", end='')
+            print()
+
+        # Build and solve
+        data_w = _slice_data(data, t0, t1, Tw)
+        data_w.update({'initial_soc': list(soc_now),
+                       'ev_initial_soc': list(ev_soc_now),
+                       'hp_T_init': list(T_now),
+                       'cyclic_soc': is_last})
+
+        model = gp.Model(f'debug_w{w+1}')
+        model.Params.OutputFlag     = 0
+        model.Params.FeasibilityTol = 1e-9
+
+        agents = [add_prosumer(model, i, data_w) for i in range(N)]
+        for i,j in data_w['edges']:
+            for t in range(Tw):
+                model.addConstr(agents[i]['trade'][j,t] +
+                                agents[j]['trade'][i,t] == 0)
+        if with_network:
+            p_inj = {(i,t): a['injection'][t]   for i,a in enumerate(agents) for t in range(Tw)}
+            q_inj = {(i,t): a['q_injection'][t] for i,a in enumerate(agents) for t in range(Tw)}
+            p_flow, q_flow, voltage, grid = add_network(
+                model, p_inj, data_w['agent_bus'], Tw, data_w['line_limit_mva'],
+                q_injections_kvar=q_inj)
+
+        model.setObjective(gp.quicksum(a['cost'] for a in agents))
+        model.optimize()
+
+        if model.Status == gp.GRB.OPTIMAL:
+            cost = sum(a['cost'].getValue() for a in agents)
+            print(f"  ✓ FEASIBLE  cost={cost:.4f} EUR")
+
+            # Forward state
+            for i in range(N):
+                if data['battery_capacity'][i] > 0:
+                    soc_now[i] = float(agents[i]['soc'][Tw].X)
+                if data.get('ev_capacity',[0]*N)[i] > 0:
+                    ev_soc_now[i] = float(agents[i]['ev_soc'][Tw].X) \
+                                    if 'ev_soc' in agents[i] else ev_soc_now[i]
+                if data.get('hp_max_power',[0]*N)[i] > 0 and 'temp' in agents[i]:
+                    T_now[i] = float(agents[i]['temp'][Tw].X)
+            model.dispose()
+
+        else:
+            print(f"  ✗ INFEASIBLE (status={model.Status}) — computing IIS...")
+            model.Params.OutputFlag = 0
+            model.computeIIS()
+
+            print(f"\n  {'─'*50}")
+            print(f"  IIS — Infeasible constraints:")
+            iis_constrs = [c for c in model.getConstrs() if c.IISConstr]
+            if iis_constrs:
+                for c in iis_constrs:
+                    print(f"    CONSTR: {c.ConstrName}")
+            else:
+                print("    (no linear constraints in IIS)")
+
+            print(f"\n  IIS — Infeasible variable bounds:")
+            iis_vars = [(v, v.IISLB, v.IISUB)
+                        for v in model.getVars() if v.IISLB or v.IISUB]
+            if iis_vars:
+                for v, lb_viol, ub_viol in iis_vars:
+                    side = 'LB' if lb_viol else 'UB'
+                    print(f"    VAR {side}: {v.VarName}  "
+                          f"bounds=[{v.lb:.4f}, {v.ub:.4f}]")
+            else:
+                print("    (no variable bounds in IIS)")
+
+            # Categorise the infeasibility
+            names_str = ' '.join(c.ConstrName for c in iis_constrs)
+            names_str += ' '.join(v.VarName for v,_,_ in iis_vars)
+            print(f"\n  Likely cause:")
+            if 'soc' in names_str.lower():
+                print("    → BESS SOC constraint — check initial_soc and min/max bounds")
+            if 'ev_soc' in names_str.lower() or 'ev' in names_str.lower():
+                print("    → EV SOC constraint — check ev_initial_soc and DoD floor")
+            if 'temp' in names_str.lower():
+                print("    → HP temperature constraint — check T_init and T_min/T_max")
+            if 'dep' in names_str.lower():
+                print("    → EV departure SOC constraint — check ev_soc_min_departure")
+            if 'balance' in names_str.lower() or 'bal' in names_str.lower():
+                print("    → Energy balance — check demand vs generation+storage")
+            if not iis_constrs and not iis_vars:
+                print("    → Could not determine — check IIS output above")
+
+            model.dispose()
+            print(f"\n  Stopping at first infeasible window.")
+            return None
+
+    print(f"\n{'─'*60}")
+    print("All windows feasible.")
+
 
 def centralized_window(data, window_h=3.0, with_network=False):
     """Sliding-window centralized solver — diagnostic mirror of distributed_window.

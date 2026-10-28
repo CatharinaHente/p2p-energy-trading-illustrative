@@ -95,6 +95,10 @@ def _ask(name):
 
 
 # ── Solver cases ──────────────────────────────────────────────────────────────
+J_nt = no_trade_costs(data)
+data['ir_bound'] = [float(J_nt[i]) + 1e-2 for i in range(len(data['demand']))]
+# IR - individual rationality 
+
 SOLVERS = {
     'centralized':          lambda: centralized(data),
     'distributed':          lambda: distributed(data, rho=2.0, tolerance=1e-7),

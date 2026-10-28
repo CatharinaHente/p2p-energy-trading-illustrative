@@ -178,7 +178,7 @@ def add_prosumer(model, i, data):
     # --- Cost ---
     q_cost = data.get('q_cost', 0.0)   # EUR/kVAR²·h — regularises Q, breaks Q degeneracy
     p_cost = data.get('p_cost', 0.0)   # EUR/kW²·h  — regularises P, breaks P degeneracy
-    # p_cost should be small so it does not materially affect economics
+    # p_cost should be small (e.g. 1e-6) so it does not materially affect economics
     # but large enough to select a unique point on the flat optimal face
     cost = (
         data['dt'] * gp.quicksum(
@@ -189,11 +189,18 @@ def add_prosumer(model, i, data):
             + data.get('ev_cost',  0.0) * (ev_charge[t] + ev_discharge[t])
             + data.get('hp_cost',  0.0) * hp_power[t]
             + q_cost * (q_batt[t]*q_batt[t] + q_pv[t]*q_pv[t] + ev_q[t]*ev_q[t])
-            + + p_cost * (charge[t]*charge[t] + discharge[t]*discharge[t]
-            + ev_charge[t]*ev_charge[t] + ev_discharge[t]*ev_discharge[t]
-            + gp.quicksum(trade[j,t]*trade[j,t] for j in peers))
+            + p_cost * (charge[t]*charge[t] + discharge[t]*discharge[t]
+                        + ev_charge[t]*ev_charge[t] + ev_discharge[t]*ev_discharge[t]
+                        + gp.quicksum(trade[j,t]*trade[j,t] for j in peers))
             for t in range(T))
         + data['dt'] * data['trade_fee'] * trade_abs.sum())
+
+    # Individual rationality — prosumer cost must not exceed no-trade cost
+    # Set data['ir_bound'] = [J_nt[i] + slack for i in range(N)] in main.py
+    # Slack of 1e-3 EUR absorbs numerical tightness from quadratic regularisation
+    ir_bound = data.get('ir_bound', [None]*N)[i]
+    if ir_bound is not None:
+        model.addConstr(cost <= ir_bound, name=f'IR_{i}')
 
     return dict(
         buy=buy, sell=sell, trade=trade,
