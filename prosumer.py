@@ -75,13 +75,19 @@ def add_prosumer(model, i, data):
 
     # --- PV reactive power ---
     # Triangular FOR: |Q_pv| ≤ P_pv · tan(arccos(pf_pv_min)) — flexibility paper Fig 1b
-    pf_pv_min = data.get('pf_pv_min', 0.90)                          # REVIEW: EN 50549 / IEEE 1547
+    # Grid-code reference for pf_pv_min = 0.90: EN 50549-1 §4.6 / IEEE 1547-2018 §7.4.
+    pf_pv_min = data.get('pf_pv_min', 0.90)
     tan_pv    = _tan(pf_pv_min)
-    q_pv = model.addVars(T, lb=0, ub=0, name=f'q_pv_{i}')           # bounds set per t below
+    # Variable bounds are time-varying (depend on g_{i,t}), so declare with wide
+    # symmetric bounds first and update them per timestep using .lb / .ub directly.
+    # NOTE: do NOT use addConstr for per-timestep bounds — Gurobi enforces variable
+    # bounds separately from constraint rows, and addConstr with lb=ub=0 would keep
+    # q_pv pinned at 0 while the constraints become vacuously satisfied.
+    q_pv = model.addVars(T, lb=-gp.GRB.INFINITY, ub=gp.GRB.INFINITY, name=f'q_pv_{i}')
     for t in range(T):
-        q_max = data['generation'][i][t] * tan_pv
-        model.addConstr(q_pv[t] <=  q_max)
-        model.addConstr(q_pv[t] >= -q_max)
+        q_max        = data['generation'][i][t] * tan_pv
+        q_pv[t].lb   = -q_max   # capacitive limit (negative = inductive)
+        q_pv[t].ub   =  q_max
 
     # --- EV ---
     ev_cap_nom = data.get('ev_capacity', [0] * N)[i]
@@ -150,7 +156,11 @@ def add_prosumer(model, i, data):
         temp     = None
 
     # --- Power factors (fixed) ---
-    tan_hp   = _tan(data.get('pf_hp',   0.97))   # REVIEW: cite HP manufacturer data
+    # HP power factor: 0.97 is a typical inductive value from heat-pump datasheets.
+    # IMPORTANT: no IEC/IEEE standard specifies this — cite the specific HP datasheet
+    # or use a value from a referenced study (e.g. EN 50160 annex does not cover HP).
+    # pf_load (0.95) follows the BDEW load model for residential customers.
+    tan_hp   = _tan(data.get('pf_hp',   0.97))
     tan_load = _tan(data.get('pf_load', 0.95))   # REVIEW: cite BDEW or similar
 
     # --- Energy balance and bus injections ---
@@ -178,7 +188,7 @@ def add_prosumer(model, i, data):
     # --- Cost ---
     q_cost = data.get('q_cost', 0.0)   # EUR/kVAR²·h — regularises Q, breaks Q degeneracy
     p_cost = data.get('p_cost', 0.0)   # EUR/kW²·h  — regularises P, breaks P degeneracy
-    # p_cost should be small (e.g. 1e-6) so it does not materially affect economics
+    # p_cost should be small so it does not materially affect economics
     # but large enough to select a unique point on the flat optimal face
     cost = (
         data['dt'] * gp.quicksum(
@@ -194,13 +204,6 @@ def add_prosumer(model, i, data):
                         + gp.quicksum(trade[j,t]*trade[j,t] for j in peers))
             for t in range(T))
         + data['dt'] * data['trade_fee'] * trade_abs.sum())
-
-    # Individual rationality — prosumer cost must not exceed no-trade cost
-    # Set data['ir_bound'] = [J_nt[i] + slack for i in range(N)] in main.py
-    # Slack of 1e-3 EUR absorbs numerical tightness from quadratic regularisation
-    ir_bound = data.get('ir_bound', [None]*N)[i]
-    if ir_bound is not None:
-        model.addConstr(cost <= ir_bound, name=f'IR_{i}')
 
     return dict(
         buy=buy, sell=sell, trade=trade,

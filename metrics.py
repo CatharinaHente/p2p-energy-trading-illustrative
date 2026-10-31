@@ -219,8 +219,165 @@ def var_savings(d):
     return float(np.var(d, ddof=0))
 
 
-# POF - Price of Fairness (W3)
-   
-# POO - Price of Optimality 
+# ── Precomputation: Fair-optimal allocations ──────────────────────────────────────────────────
+
+def fair_optimal_SW(data, J_nt):
+    """Allocation that maximises SW(d) = Σ d_i (utilitarian fairness optimum).
+
+    Equivalent to minimising the J_nt-weighted cost Σ J_i(x)/J_nt_i, which
+    gives more weight to prosumers with a lower no-trade cost, protecting them
+    from subsidising high-cost participants.
+
+    This is the denominator allocation for PoO_SW and the numerator for PoF_SW.
+
+    Parameters
+    ----------
+    data  : dict     scenario data dict
+    J_nt  : ndarray  (N,) no-trade costs from no_trade_costs()
+
+    Returns
+    -------
+    dict with at least 'costs' key — sufficient for PoO and PoF computation.
+
+    References
+    ----------
+    Bertsimas et al. (2011) Operations Research — utilitarian fairness.
+    Student proposal eq. (4): PoO_W = 1 − W(x^SO) / max_{x∈X} W(x).
+    """
+    N, T  = len(data['demand']), len(data['buy_price'])
+    m     = _model('fair_SW')
+    try:
+        agents = [add_prosumer(m, i, data) for i in range(N)]
+        for i, j in data['edges']:
+            for t in range(T):
+                m.addConstr(agents[i]['trade'][j,t] + agents[j]['trade'][i,t] == 0)
+
+        # Weighted objective: min Σ (1/J_nt_i) · J_i(x)
+        # Since d_i = (J_nt_i − J_i)/J_nt_i, max Σ d_i ≡ min Σ J_i/J_nt_i
+        weights = np.where(np.abs(J_nt) > 1e-9, 1.0 / J_nt, 1.0)
+        m.setObjective(
+            gp.quicksum(w * a['cost'] for w, a in zip(weights, agents)),
+            gp.GRB.MINIMIZE)
+        _optimize(m)
+        return {'costs': np.array([a['cost'].getValue() for a in agents])}
+    finally:
+        m.dispose()
 
 
+def fair_optimal_MM(data, J_nt):
+    """Allocation that maximises MM(d) = min_i d_i (Rawlsian maximin optimum).
+
+    Reformulation as a linear programme in τ (the guaranteed savings fraction):
+
+        max  τ
+        s.t. J_i(x) ≤ (1 − τ) · J_nt_i   ∀i ∈ I      [d_i ≥ τ]
+             x ∈ X                                      [device + market constraints]
+
+    Each constraint J_i(x) ≤ (1 − τ)·J_nt_i is a convex quadratic constraint
+    (J_i is convex quadratic, J_nt_i is a positive constant) — Gurobi solves
+    convex QCQPs to global optimality.
+
+    Parameters
+    ----------
+    data  : dict     scenario data dict
+    J_nt  : ndarray  (N,) no-trade costs from no_trade_costs()
+
+    Returns
+    -------
+    dict with at least 'costs' key.
+
+    References
+    ----------
+    Rawls (1971) A Theory of Justice — maximin principle.
+    Bertsimas et al. (2011) — price of fairness under maximin.
+    Student proposal eq. (4): PoO_W = 1 − W(x^SO) / max_{x∈X} W(x).
+    """
+    N, T  = len(data['demand']), len(data['buy_price'])
+    m     = _model('fair_MM')
+    m.Params.NonConvex = 0   # confirm problem is convex
+    try:
+        agents = [add_prosumer(m, i, data) for i in range(N)]
+        for i, j in data['edges']:
+            for t in range(T):
+                m.addConstr(agents[i]['trade'][j,t] + agents[j]['trade'][i,t] == 0)
+
+        # Slack variable τ: the minimum savings fraction to maximise
+        # τ ≤ 1 always (cannot save more than 100 % of no-trade cost)
+        # τ may be negative if some prosumer is worse off at the optimum
+        tau = m.addVar(lb=-gp.GRB.INFINITY, ub=1.0, name='tau')
+
+        # J_i(x) ≤ (1 − τ) · J_nt_i   ↔   d_i(x) ≥ τ
+        denom = np.where(np.abs(J_nt) > 1e-9, J_nt, 1.0)
+        for i, (a, jnt) in enumerate(zip(agents, denom)):
+            # Rearranged: J_i(x) + jnt·τ ≤ jnt
+            m.addQConstr(a['cost'] + jnt * tau <= jnt, name=f'MM_{i}')
+
+        m.setObjective(tau, gp.GRB.MAXIMIZE)
+        _optimize(m)
+        return {'costs': np.array([a['cost'].getValue() for a in agents])}
+    finally:
+        m.dispose()
+
+
+# ── Step 4: PoO and PoF ───────────────────────────────────────────────────────────────
+
+def poo(W_fn, d_so, d_fair):
+    """Price of Optimality for fairness metric W.
+
+    Measures how much fairness is lost by clearing at the social optimum
+    instead of the fairness optimum:
+
+        PoO_W = 1 − W(d(x^SO)) / W(d(x^W-fair))
+              = 1 − W(d_so) / W(d_fair)
+
+    PoO = 0: social optimum is already fair (no loss).
+    PoO = 1: social optimum achieves zero fairness relative to maximum.
+    PoO > 1: social optimum is worse than the worst feasible allocation
+             (possible when W can be negative, e.g. MM with d_i < 0).
+
+    Parameters
+    ----------
+    W_fn   : callable   fairness metric, e.g. sw or mm from this module
+    d_so   : ndarray    savings vector at social optimum
+    d_fair : ndarray    savings vector at fairness optimum
+
+    References
+    ----------
+    Sem. thesis proposal eq. (4): PoO_W = 1 − W(x^SO) / max_{x∈X} W(x).
+    Bertsimas et al. (2011) — price of fairness (reversed direction of comparison).
+    """
+    w_so   = W_fn(d_so)
+    w_fair = W_fn(d_fair)
+    if abs(w_fair) < 1e-12:
+        return float('nan')
+    return 1.0 - w_so / w_fair
+
+
+def pof(result_so, result_fair, J_nt):
+    """Price of Fairness: efficiency loss from pursuing the fair allocation.
+
+    Measures how much total welfare (efficiency) is sacrificed when the market
+    clears at the fairness optimum instead of the social optimum:
+
+        PoF = 1 − TW(x^fair) / TW(x^SO)
+            = 1 − (ΣJ_nt − ΣJ_fair) / (ΣJ_nt − ΣJ_SO)
+
+    PoF = 0: fair allocation is equally efficient as social optimum.
+    PoF > 0: fair allocation wastes some total welfare for fairness.
+
+    Parameters
+    ----------
+    result_so   : dict   social optimum result (needs 'costs' key)
+    result_fair : dict   fairness-optimal result (needs 'costs' key)
+    J_nt        : ndarray (N,) no-trade costs
+
+    References
+    ----------
+    Bertsimas et al. (2011) Operations Research, Definition 1.
+    Student proposal §3: price of optimality (reversed: here x^SO is efficient).
+    """
+    tw_so   = tw(J_nt, np.array(result_so['costs']))
+    tw_fair = tw(J_nt, np.array(result_fair['costs']))
+    if abs(tw_so) < 1e-12:
+        return float('nan')
+    return 1.0 - tw_fair / tw_so

@@ -232,23 +232,35 @@ def _dwd_temperature(station_id, year=2016):
 
 # ── Main scenario builder ──────────────────────────────────────────────────────
 
-def make_scenario(season='winter', seed=42, resolution_h=0.5):
+def make_scenario(season='winter', seed=42, resolution_h=0.5,
+                  _date_slice=None, _date_slice_date=None):
     """Build a data dict from SimBench + DWD for case33bw.
 
     Parameters
     ----------
     season       : 'winter' | 'spring' | 'summer' | 'autumn'
+                   Controls prices and season-dependent EV/HP parameters.
+                   When _date_slice is provided, season is still used for
+                   these parameters but the actual profile day comes from
+                   _date_slice rather than _SEASONS[season].
     seed         : random seed for HP profile selection
     resolution_h : timestep size in hours
                    0.25 → 15-min T=96  (centralized only, distributed too slow)
                    0.5  → 30-min T=48  (recommended — distributed terminates)
                    1.0  → 1-hour T=24  (fastest, coarser EV/BESS dynamics)
+    _date_slice  : slice, optional
+                   If provided, overrides the SimBench day slice from _SEASONS.
+                   Used by make_scenario_date() to run arbitrary calendar days.
 
     Returns
     -------
     data dict compatible with prosumer.py / algo.py
     """
-    assert season in _SEASONS, f"season must be one of {list(_SEASONS)}"
+    assert season in ('winter', 'spring', 'summer', 'autumn'), \
+        f"season must be one of ('winter','spring','summer','autumn')"
+    if _date_slice is None:
+        assert season in _SEASONS, \
+            f"season '{season}' has no default slice; pass _date_slice explicitly"
     assert resolution_h in (0.25, 0.5, 1.0), \
         "resolution_h must be 0.25, 0.5 or 1.0"
 
@@ -258,7 +270,7 @@ def make_scenario(season='winter', seed=42, resolution_h=0.5):
     factor = int(round(resolution_h / 0.25))   # 1, 2, or 4
     T      = 96 // factor
     dt     = resolution_h
-    slc    = _SEASONS[season]
+    slc    = _date_slice if _date_slice is not None else _SEASONS[season]
 
     # ── Resampling helpers (operate on 96-step 15-min day slices) ─────────────
     def _mean(arr):
@@ -282,24 +294,34 @@ def make_scenario(season='winter', seed=42, resolution_h=0.5):
     temp_han = _dwd_temperature(2564)['temp_C'].values   # 35136 × 15-min
     temp_lub = _dwd_temperature(2928)['temp_C'].values
 
-    # ── Electricity prices — defined hourly, repeated to resolution ────────────
-    if season == 'winter':
-        _buy_h  = [0.28]*6 + [0.35]*3 + [0.22]*6 + [0.35]*4 + [0.28]*3 + [0.22]*2
-        _sell_h = [0.08]*24
-        _p2p_h  = [0.15]*6 + [0.20]*3 + [0.12]*6 + [0.20]*4 + [0.15]*3 + [0.12]*2
-    elif season == 'summer':
-        _buy_h  = [0.22]*6 + [0.28]*3 + [0.18]*6 + [0.25]*4 + [0.22]*3 + [0.20]*2
-        _sell_h = [0.08]*24
-        _p2p_h  = [0.12]*6 + [0.16]*3 + [0.10]*6 + [0.14]*4 + [0.12]*3 + [0.11]*2
-    else:
-        _buy_h  = [0.25]*24
-        _sell_h = [0.08]*24
-        _p2p_h  = [0.14]*24
+    # ── Electricity prices ────────────────────────────────────────────────────
+    # When a specific calendar date is known, use real day-ahead prices from
+    # energy-charts.info (via pricing.py).  Fall back to hardcoded seasonal
+    # profiles only when make_scenario() is called without a date slice.
+    _date_str = _date_slice_date   # set below by make_scenario_date; else None
 
-    steps_per_hour = 4 // factor   # 4 for 15-min, 2 for 30-min, 1 for hourly
-    buy_price  = np.repeat(_buy_h,  steps_per_hour).tolist()
-    sell_price = np.repeat(_sell_h, steps_per_hour).tolist()
-    p2p_price  = np.repeat(_p2p_h,  steps_per_hour).tolist()
+    if _date_str is not None:
+        from pricing import get_day_prices
+        buy_price, sell_price, p2p_price = get_day_prices(
+            _date_str, resolution_h=resolution_h)
+    else:
+        # Hardcoded seasonal fallback (used when called with season name only)
+        if season == 'winter':
+            _buy_h  = [0.28]*6 + [0.35]*3 + [0.22]*6 + [0.35]*4 + [0.28]*3 + [0.22]*2
+            _sell_h = [0.08]*24
+            _p2p_h  = [0.15]*6 + [0.20]*3 + [0.12]*6 + [0.20]*4 + [0.15]*3 + [0.12]*2
+        elif season == 'summer':
+            _buy_h  = [0.22]*6 + [0.28]*3 + [0.18]*6 + [0.25]*4 + [0.22]*3 + [0.20]*2
+            _sell_h = [0.08]*24
+            _p2p_h  = [0.12]*6 + [0.16]*3 + [0.10]*6 + [0.14]*4 + [0.12]*3 + [0.11]*2
+        else:
+            _buy_h  = [0.25]*24
+            _sell_h = [0.08]*24
+            _p2p_h  = [0.14]*24
+        steps_per_hour = 4 // factor
+        buy_price  = np.repeat(_buy_h,  steps_per_hour).tolist()
+        sell_price = np.repeat(_sell_h, steps_per_hour).tolist()
+        p2p_price  = np.repeat(_p2p_h,  steps_per_hour).tolist()
 
     # ── Per-prosumer arrays ───────────────────────────────────────────────────
     demand     = []
@@ -455,14 +477,59 @@ def make_scenario(season='winter', seed=42, resolution_h=0.5):
         pf_load               = 0.95,
         # Regularisation
         q_cost                = 1e-4,   # EUR/kVAR²·h — breaks Q degeneracy
-        p_cost                = 1e-6,   # EUR/kW²·h  — breaks P degeneracy
+        p_cost                = 1e-3,   # EUR/kW²·h  — breaks P degeneracy (tuned by ADMM sweep)
         # Metadata
         season                = season,
         resolution_h          = resolution_h,
         prosumer_names        = [p['name'] for p in _PROSUMERS],
+        date                  = None,   # set by make_scenario_date if called that way
     )
 
     print(f"  Done. N={N}, T={T}, dt={dt}h, max_demand={max_demand:.1f} kW")
+    return data
+
+
+# ── Date-aware scenario builder ───────────────────────────────────────────────
+
+# 2016 is a leap year; month lengths used to compute day-of-year slices
+_DAYS_2016 = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+# Meteorological season by month — controls prices and EV/HP parameters
+_MONTH_SEASON = {
+    1: 'winter', 2: 'winter',
+    3: 'spring', 4: 'spring', 5: 'spring',
+    6: 'summer', 7: 'summer', 8: 'summer',
+    9: 'autumn', 10: 'autumn', 11: 'autumn',
+    12: 'winter',
+}
+
+
+def make_scenario_date(date_str, seed=42, resolution_h=0.5):
+    """Build a data dict for any specific calendar day in 2016.
+
+    Parameters
+    ----------
+    date_str     : str   'YYYY-MM-DD', e.g. '2016-01-15'
+                         Year must be 2016 (SimBench reference year, leap year).
+    seed         : int   random seed for HP profile selection
+    resolution_h : float timestep size in hours (0.25 | 0.5 | 1.0)
+
+    Returns
+    -------
+    data dict with an additional 'date' key set to date_str.
+    """
+    year, month, day = (int(x) for x in date_str.split('-'))
+    assert year == 2016, "SimBench profiles are for 2016 only"
+    assert 1 <= month <= 12 and 1 <= day <= _DAYS_2016[month-1], \
+        f"Invalid date: {date_str}"
+
+    doy = sum(_DAYS_2016[:month-1]) + (day - 1)   # 0-indexed day of year
+    slc = slice(doy * 96, (doy + 1) * 96)
+    season = _MONTH_SEASON[month]
+
+    data = make_scenario(season=season, seed=seed, resolution_h=resolution_h,
+                         _date_slice=slc, _date_slice_date=date_str)
+    data['date'] = date_str
     return data
 
 
