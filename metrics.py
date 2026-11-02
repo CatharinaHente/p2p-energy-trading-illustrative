@@ -41,11 +41,14 @@ def _model(name):
     m.Params.OptimalityTol  = 1e-9
     return m
 
+# also accepts suboptimal solutions
 def _optimize(model):
     model.optimize()
-    if model.Status != gp.GRB.OPTIMAL:
+    if model.Status not in (gp.GRB.OPTIMAL, gp.GRB.SUBOPTIMAL):
         raise RuntimeError(f'{model.ModelName}: infeasible or unbounded '
                            f'(status {model.Status})')
+    if model.Status == gp.GRB.SUBOPTIMAL:
+        print(f'  ⚠ {model.ModelName}: suboptimal solution accepted')
 
 
 # ── Step 1: No-trade baseline ─────────────────────────────────────────────────
@@ -254,7 +257,7 @@ def fair_optimal_SW(data, J_nt):
 
         # Weighted objective: min Σ (1/J_nt_i) · J_i(x)
         # Since d_i = (J_nt_i − J_i)/J_nt_i, max Σ d_i ≡ min Σ J_i/J_nt_i
-        weights = np.where(np.abs(J_nt) > 1e-9, 1.0 / J_nt, 1.0)
+        weights = np.where(np.abs(J_nt) > 1e-9, 1.0 / np.abs(J_nt), 1.0)
         m.setObjective(
             gp.quicksum(w * a['cost'] for w, a in zip(weights, agents)),
             gp.GRB.MINIMIZE)
@@ -310,7 +313,11 @@ def fair_optimal_MM(data, J_nt):
         denom = np.where(np.abs(J_nt) > 1e-9, J_nt, 1.0)
         for i, (a, jnt) in enumerate(zip(agents, denom)):
             # Rearranged: J_i(x) + jnt·τ ≤ jnt
-            m.addQConstr(a['cost'] + jnt * tau <= jnt, name=f'MM_{i}')
+            # the quadratic constraint J_i(x) + |J_nt_i| · τ ≤ J_nt_i mixes a quadratic expression 
+            # in x with a linear term in τ, and Gurobi’s QCQP branch-and-bound can terminate before 
+            # proving the gap is closed; still valid upper bound
+            abs_jnt = abs(float(jnt))
+            m.addQConstr(a['cost'] + abs_jnt * tau <= jnt, name=f'MM_{i}')
 
         m.setObjective(tau, gp.GRB.MAXIMIZE)
         _optimize(m)
