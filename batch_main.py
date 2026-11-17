@@ -1,77 +1,60 @@
-"""run.py — Batch runner for the P2P market analysis.
+"""batch_main.py — Batch runner for the P2P market analysis.
 
-Edit the CONFIGURATION block at the top.  Everything else is automatic.
+Runs centralized and distributed solvers for every date, computes fairness
+metrics (from metrics.py), and saves results to the structured result library.
 
-Result layout
-─────────────
-    structures/
-    └── {STRUCTURE}/
-        └── results/
-            └── {date}/
-                ├── no_trade.json   — no-trade baseline (cached; never recomputed)
-                ├── centralized.json
-                ├── distributed.json
-                └── fairness.json   — PoO, PoF, all metric values
+Result layout:
+    structures/{STRUCTURE}/results/{date}/
+        no_trade.json   — no-trade baseline (cached)
+        centralized.json
+        distributed.json
+        fairness.json   — all metrics: TW, NBS, MM, JI, Var on J_i and d_i
 
-Skip logic
-──────────
-Each file is written atomically on completion.  If a file already exists the
-corresponding step is skipped.  Interrupt and restart at any time; only the
-missing pieces will be computed.
-
-Usage
-─────
-    python run.py
+Usage: python batch_main.py
 """
 from pathlib import Path
 import json, time
 import numpy as np
 
-from scenarios import make_scenario_date
-from algo_central import centralized
-from algo_ADMM import distributed
-from metrics import (no_trade_costs, savings,
-                     sw, tw, mm, jains, var_savings,
-                     fair_optimal_SW, fair_optimal_MM,
-                     poo, pof)
-from network import evaluate_feeder
+from scenarios     import make_scenario_date
+from algo_central  import centralized
+from algo_ADMM     import distributed
+from metrics       import no_trade_costs, compute_metrics
+from network       import evaluate_feeder
+from config import (
+    NETWORK_TOPOLOGY,
+    PROSUMER_SCENARIO,
+    TRADING_TOPOLOGY,
+)
 
 ROOT = Path(__file__).resolve().parent
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CONFIGURATION — edit here to change what runs
+# CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-STRUCTURE = 'base'          # must match a folder under structures/
+PROSUMER_SCENARIO = 8  # Options: 4, 8, 16, 32
 
-# Calendar dates to analyse (SimBench reference year is 2016)
+STRUCTURE = (
+    f'{NETWORK_TOPOLOGY}_{PROSUMER_SCENARIO}_{TRADING_TOPOLOGY}'
+)
+
+# 7th, 14th, 21st of each month — 3 days per month, 36 total
 DATES = [
-    '2016-01-15', '2016-02-15', '2016-03-15',
-    '2016-04-15', '2016-05-15', '2016-06-15',
-    '2016-07-15', '2016-08-15', '2016-09-15',
-    '2016-10-14', '2016-11-15', '2016-12-15',
+    f'2016-{m:02d}-{d:02d}'
+    for m in range(1, 13)
+    for d in [7, 14, 21]
 ]
 
-# Which solver cases to run per date; uncomment network cases if desired
-CASES = [
-    'centralized',
-    'distributed',
-    #'centralized_network',
-    #'distributed_network',
-]
+CASES = ['centralized', 'distributed']
 
-# Solver and scenario settings
 SETTINGS = dict(
-    resolution_h   = 0.5,    # 30-min steps → T=48
+    resolution_h   = 0.5,
     seed           = 42,
     admm_rho       = 10.0,
     admm_tolerance = 1e-5,
 )
-
-# Set True to compute PoO and PoF after each centralized solve.
-# Adds two extra Gurobi solves (SW-fair and MM-fair) per date.
-COMPUTE_FAIRNESS = False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -100,14 +83,13 @@ def _read(path):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _serialise(result, date, case):
-    """Convert a result dict to a JSON-serialisable form."""
     s = {}
     for k, v in result.items():
         if k == 'trades':
             s['trades'] = {f'{i}->{j}@{t}': float(v)
                            for (i, j, t), v in result['trades'].items()}
         elif k == 'network':
-            s['network'] = result['network']   # already JSON-safe from evaluate_feeder
+            s['network'] = result['network']
         elif isinstance(v, np.ndarray):
             s[k] = v.tolist()
         else:
@@ -140,9 +122,8 @@ def _network(result, data):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_date(date):
-    """Run all missing cases for one date. Skip steps that already exist."""
     cases_needed    = [c for c in CASES if not _exists(date, c)]
-    fairness_needed = COMPUTE_FAIRNESS and not _exists(date, 'fairness')
+    fairness_needed = not _exists(date, 'fairness')
 
     if not cases_needed and not fairness_needed:
         print(f"  {date}: complete — skipping")
@@ -168,6 +149,10 @@ def run_date(date):
     for case in CASES:
         if _exists(date, case):
             print(f"  {date}/{case}: exists — skipping")
+            # Load costs for metrics even if we don't re-solve
+            if case not in results:
+                raw = _read(_path(date, case))
+                results[case] = {'costs': np.array(raw['costs'])}
             continue
 
         print(f"  {date}/{case}: running ...")
@@ -185,69 +170,46 @@ def run_date(date):
         result['network'] = _network(result, data)
         elapsed = time.time() - t0
 
-        d    = savings(result, J_nt)
-        J_so = np.array(result['costs'])
-        print(f"  {date}/{case}: total={sum(result['costs']):.3f} EUR  "
-              f"TW={tw(J_nt, J_so):.4f}  MM={mm(d):.4f}  SW={sw(d):.4f}  "
-              f"({elapsed:.1f}s)")
+        m_all  = compute_metrics(result, J_nt)
+        d_so   = m_all['d']
+        jm     = m_all['J_metrics']
+        dm     = m_all['d_metrics']
+
+        print(f"  {date}/{case}:  total={result['costs'].sum():.3f} EUR  "
+              f"TW={jm['TW']:.4f}  NBS={jm['NBS']:.4f}  "
+              f"MM(d)={dm['MM']:+.4f}  ({elapsed:.1f}s)")
 
         _write(_path(date, case), _serialise(result, date, case))
         results[case] = result
 
-    # ── Fairness metrics ──────────────────────────────────────────────────────
+    # ── Fairness metrics (always from centralized) ────────────────────────────
     if fairness_needed:
-        # Load centralized result from file if not in memory
         if 'centralized' not in results:
-            if not _exists(date, 'centralized'):
-                print(f"  {date}/fairness: centralized result missing — skipping")
-                return
             raw = _read(_path(date, 'centralized'))
             r_c = {'costs': np.array(raw['costs'])}
         else:
             r_c = results['centralized']
 
-        J_so = np.array(r_c['costs'])
-        d_so = savings(r_c, J_nt)
-
-        print(f"  {date}/fairness: computing SW-fair and MM-fair ...")
-        t0 = time.time()
-        r_sw = fair_optimal_SW(data, J_nt)
-        r_mm = fair_optimal_MM(data, J_nt)
-        d_sw = savings(r_sw, J_nt)
-        d_mm = savings(r_mm, J_nt)
-        elapsed = time.time() - t0
-
-        poo_sw = poo(sw, d_so, d_sw)
-        poo_mm = poo(mm, d_so, d_mm)
-        pof_sw = pof(r_c, r_sw, J_nt)
-        pof_mm = pof(r_c, r_mm, J_nt)
+        m_all = compute_metrics(r_c, J_nt)
+        d     = m_all['d']
+        jm    = m_all['J_metrics']
+        dm    = m_all['d_metrics']
 
         fairness = {
-            'date':       date,
-            'structure':  STRUCTURE,
-            'settings':   SETTINGS,
-            'J_nt':       J_nt.tolist(),
-            'J_so':       J_so.tolist(),
-            'd_so':       d_so.tolist(),
-            'TW':         float(tw(J_nt, J_so)),
-            'SW':         float(sw(d_so)),
-            'MM':         float(mm(d_so)),
-            'JI':         float(jains(d_so)),
-            'Var':        float(var_savings(d_so)),
-            'J_sw_fair':  r_sw['costs'].tolist(),
-            'J_mm_fair':  r_mm['costs'].tolist(),
-            'd_sw_fair':  d_sw.tolist(),
-            'd_mm_fair':  d_mm.tolist(),
-            'PoO_SW':     float(poo_sw),
-            'PoO_MM':     float(poo_mm),
-            'PoF_SW':     float(pof_sw),
-            'PoF_MM':     float(pof_mm),
+            'date':      date,
+            'structure': STRUCTURE,
+            'settings':  SETTINGS,
+            'J_nt':      J_nt.tolist(),
+            'J_so':      m_all['J'].tolist(),
+            'd':         d.tolist(),
+            'J_metrics': {k: float(v) for k, v in jm.items()},
+            'd_metrics': {k: float(v) for k, v in dm.items()},
         }
         _write(_path(date, 'fairness'), fairness)
         print(f"  {date}/fairness: "
-              f"PoO_SW={poo_sw:.4f}  PoO_MM={poo_mm:.4f}  "
-              f"PoF_SW={pof_sw:.4f}  PoF_MM={pof_mm:.4f}  "
-              f"({elapsed:.1f}s)")
+              f"TW={jm['TW']:.4f}  NBS={jm['NBS']:.4f}  "
+              f"MM(J)={jm['MM']:.4f}  MM(d)={dm['MM']:+.4f}  "
+              f"JI(J)={jm['JI']:.4f}  JI(d)={dm['JI']:.4f}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -255,50 +217,33 @@ def run_date(date):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def summarise():
-    """Print a table of all completed fairness results for STRUCTURE."""
-    from datetime import datetime
     rows = []
     for date in DATES:
         if not _exists(date, 'fairness'):
             continue
         f = _read(_path(date, 'fairness'))
-        rows.append(f)
+        rows.append({'date': date, **f['J_metrics'],
+                     **{f'd_{k}': v for k, v in f['d_metrics'].items()}})
 
     if not rows:
         print("\nNo fairness results found yet.")
         return
 
+    import pandas as pd
+    df = pd.DataFrame(rows).set_index('date')
     print(f"\n{'═'*80}")
-    print(f"Fairness summary — structure: {STRUCTURE}  ({len(rows)}/{len(DATES)} dates)")
+    print(f"Summary — structure: {STRUCTURE}  ({len(df)}/{len(DATES)} dates)")
     print(f"{'─'*80}")
-    hdr = (f"{'Date':<12}  {'TW':>6}  {'SW':>6}  {'MM':>7}  {'JI':>6}  "
-           f"{'PoO_SW':>8}  {'PoO_MM':>8}  {'PoF_SW':>8}  {'PoF_MM':>8}")
-    print(hdr)
+    print(df[['TW','NBS','MM','JI','Var','d_MM','d_JI','d_Var']].round(4).to_string())
     print(f"{'─'*80}")
-    for f in rows:
-        print(f"{f['date']:<12}  {f['TW']:>6.4f}  {f['SW']:>6.4f}  "
-              f"{f['MM']:>7.4f}  {f['JI']:>6.4f}  "
-              f"{f['PoO_SW']:>8.4f}  {f['PoO_MM']:>8.4f}  "
-              f"{f['PoF_SW']:>8.4f}  {f['PoF_MM']:>8.4f}")
-    print(f"{'─'*80}")
-
-    # Monthly averages
-    metrics = ['TW', 'SW', 'MM', 'JI', 'PoO_SW', 'PoO_MM', 'PoF_SW', 'PoF_MM']
-    avgs = {k: np.mean([f[k] for f in rows]) for k in metrics}
-    print(f"{'mean':<12}  {avgs['TW']:>6.4f}  {avgs['SW']:>6.4f}  "
-          f"{avgs['MM']:>7.4f}  {avgs['JI']:>6.4f}  "
-          f"{avgs['PoO_SW']:>8.4f}  {avgs['PoO_MM']:>8.4f}  "
-          f"{avgs['PoF_SW']:>8.4f}  {avgs['PoF_MM']:>8.4f}")
+    print("Means:")
+    print(df[['TW','NBS','MM','JI','Var','d_MM','d_JI','d_Var']].mean().round(4).to_string())
     print(f"{'═'*80}\n")
 
-    # Save aggregate to file
     agg_path = ROOT / 'structures' / STRUCTURE / 'results' / 'summary.json'
-    _write(agg_path, {
-        'structure': STRUCTURE,
-        'dates': [f['date'] for f in rows],
-        'rows':  rows,
-        'means': avgs,
-    })
+    _write(agg_path, {'structure': STRUCTURE,
+                      'dates': list(df.index),
+                      'rows':  rows})
     print(f"Aggregate saved → {agg_path.relative_to(ROOT)}")
 
 
@@ -308,13 +253,16 @@ def summarise():
 
 if __name__ == '__main__':
     print(f"Structure : {STRUCTURE}")
-    print(f"Dates     : {DATES[0]} … {DATES[-1]}  ({len(DATES)} days)")
+    print(f"Dates     : {DATES[0]} … {DATES[-1]}  ({len(DATES)} dates)")
     print(f"Cases     : {CASES}")
-    print(f"Fairness  : {COMPUTE_FAIRNESS}")
     print(f"Settings  : {SETTINGS}")
     print()
 
     for date in DATES:
-        run_date(date)
+        try:
+            run_date(date)
+        except RuntimeError as e:
+            print(f"\n  !! {date}: skipped — {e}")
+            _write(_path(date, 'infeasible'), {'date': date, 'error': str(e)})
 
     summarise()

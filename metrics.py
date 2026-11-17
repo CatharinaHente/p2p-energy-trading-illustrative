@@ -1,30 +1,21 @@
 """
-metrics.py — Fairness and optimality metrics for P2P electricity markets.
+metrics.py — Fairness metrics for P2P electricity markets.
 
-Follows Hall et al. (2025) "The Limits of Fairness of the v-GNE", Table I.
+Primary metrics on raw costs J_i (EUR):
+    TW  : total welfare — efficiency reference (CUC)
+    NBS : Nash Bargaining Solution — CNC-invariant, relative to x^nt
+    MM  : maximin — worst-off prosumer's cost (CUC)
+    JI  : Jain's fairness index on costs (CUC)
+    Var : variance of costs (CUC)
 
-All fairness metrics are applied to the savings vector d ∈ R^N where:
+Additional metrics on proportional savings d_i = (J_i^nt - J_i) / J_i^nt:
+    d_i itself — reported as a metric (proportional fairness, design choice)
+    MM(d), JI(d), Var(d) — proportional variants of the above
 
-    d_i = (J_i^nt - J_i(x)) / J_i^nt
+d_i is a modelling choice encoding proportional fairness across heterogeneous
+prosumers, not a comparability claim. Stated as a design choice in thesis.
 
-d_i > 0 : prosumer i benefits from trading (saves money)
-d_i = 0 : trading neither helps nor hurts
-d_i < 0 : prosumer i is worse off with trading
-
-We use d rather than raw costs J_i so that metrics are invariant to the
-absolute size of each prosumer — a residential household and a commercial
-office operate at very different cost scales, but their fractional savings
-are directly comparable (CUC assumption, see Hall et al. Section III-B).
-
-Workflow
---------
-1.  J_nt = no_trade_costs(data)          individual costs without trading
-2.  d    = savings(result_so, J_nt)      savings fractions at social optimum
-3.  sw(d), mm(d), jains(d),              fairness metric values
-    var_savings(d)
-4.  compute x_fair (fair optimum) by
-    optimising over fairness metric
-5.  POO and POF (to be added in next step)
+POO and POF live in fairness_optima.py and operate on J_i metrics only.
 """
 
 import numpy as np
@@ -32,7 +23,7 @@ import gurobipy as gp
 from prosumer import add_prosumer
 
 
-# ── Gurobi helpers ────────────────────────────────────────────────────────────
+# ── Gurobi helpers ─────────────────────────────────────────────────────────────
 
 def _model(name):
     m = gp.Model(name)
@@ -41,46 +32,50 @@ def _model(name):
     m.Params.OptimalityTol  = 1e-9
     return m
 
-# also accepts suboptimal solutions
+
 def _optimize(model):
     model.optimize()
     if model.Status not in (gp.GRB.OPTIMAL, gp.GRB.SUBOPTIMAL):
-        raise RuntimeError(f'{model.ModelName}: infeasible or unbounded '
-                           f'(status {model.Status})')
+        raise RuntimeError(f'{model.ModelName}: status {model.Status}')
     if model.Status == gp.GRB.SUBOPTIMAL:
         print(f'  ⚠ {model.ModelName}: suboptimal solution accepted')
 
 
-# ── Step 1: No-trade baseline ─────────────────────────────────────────────────
+# ── No-trade baseline ──────────────────────────────────────────────────────────
 
 def no_trade_costs(data):
     """Solve each prosumer independently with no P2P trading.
 
-    Each prosumer i minimises its own cost J_i subject only to its own
-    device constraints and the grid — no coupling to other prosumers.
-    This gives the counterfactual: what would each prosumer pay if the
-    P2P market did not exist?
+    Returns J_nt : ndarray (N,) individual no-trade costs [EUR].
+    Disagreement point for NBS and normaliser for d_i.
 
-    Parameters
-    ----------
-    data : dict   scenario data dict (from make_scenario)
-
-    Returns
-    -------
-    J_nt : ndarray (N,)
-        Individual optimal costs without trading [EUR].
+    If a prosumer's standalone problem is infeasible (typically an EV departure
+    SOC constraint that cannot be met on a specific day), retry with
+    ev_soc_min_departure set to zero for that prosumer. This removes the
+    departure requirement while keeping all other device constraints intact.
+    The resulting J_nt_i is slightly optimistic but valid as a baseline.
     """
-    N    = len(data['demand'])
-    J_nt = np.zeros(N)
-
-    # Empty edge list → no trade variables, no coupling constraints
+    N       = len(data['demand'])
+    J_nt    = np.zeros(N)
     data_nt = {**data, 'edges': []}
 
     for i in range(N):
         m = _model(f'no_trade_P{i+1}')
         a = add_prosumer(m, i, data_nt)
         m.setObjective(a['cost'], gp.GRB.MINIMIZE)
-        _optimize(m)
+
+        try:
+            _optimize(m)
+        except RuntimeError:
+            print(f"  P{i+1}: infeasible — retrying with ev_soc_min_departure=0 ...")
+            m.dispose()
+            data_relax = {**data_nt,
+                          'ev_soc_min_departure': [0.0] * N}
+            m = _model(f'no_trade_P{i+1}_relax')
+            a = add_prosumer(m, i, data_relax)
+            m.setObjective(a['cost'], gp.GRB.MINIMIZE)
+            _optimize(m)   # raises if still infeasible — genuine problem
+
         J_nt[i] = a['cost'].getValue()
         m.dispose()
         print(f"  P{i+1} no-trade cost: {J_nt[i]:.4f} EUR")
@@ -88,303 +83,107 @@ def no_trade_costs(data):
     return J_nt
 
 
-# ── Step 2: Savings fractions ─────────────────────────────────────────────────
+# ── Proportional savings ───────────────────────────────────────────────────────
 
 def savings(result, J_nt):
-    """Compute normalised savings d_i for each prosumer.
+    """Proportional savings d_i = (J_i^nt - J_i) / J_i^nt.
 
-    Definition (Hall et al., eq. following Table I):
+    Design choice for heterogeneous prosumers — not a comparability claim.
+    d_i > 0: benefits from trading; d_i < 0: worse off than no-trade.
 
-        d_i = (J_i^nt - J_i(x)) / J_i^nt
-
-    d_i > 0 : i saves money by trading
-    d_i = 0 : trading has no effect for i
-    d_i < 0 : i is worse off trading (should not occur at social optimum
-               with a well-defined no-trade baseline, but can occur due
-               to trade fees, network constraints, or binding device limits)
-
-    Parameters
-    ----------
-    result : dict      solver result (from centralized() or distributed())
-    J_nt   : ndarray   (N,) no-trade costs from no_trade_costs()
-
-    Returns
-    -------
-    d : ndarray (N,)   savings fractions ∈ (-∞, 1]
+    Returns d : ndarray (N,) in (-inf, 1].
     """
-    J_so  = np.array(result['costs'])
-    denom = np.where(np.abs(J_nt) > 1e-9, J_nt, 1.0)   # guard zero J_nt
-    return (J_nt - J_so) / denom
+    J     = np.array(result['costs'])
+    denom = np.where(np.abs(J_nt) > 1e-9, J_nt, 1.0)
+    return (J_nt - J) / denom
 
 
-# ── Step 3: Fairness metrics (Hall et al. Table I) ────────────────────────────
+# ── Metric functions — work on any cost/savings array ─────────────────────────
 
-def sw(d, J_nt=None, J_so=None):
-    """Social Welfare / Utilitarianism (Hall et al. Table I, row 2).
+def tw(J_nt, J):
+    """Total Welfare: (Σ J_i^nt - Σ J_i) / Σ J_i^nt. Higher = more efficient."""
+    s = float(np.sum(J_nt))
+    return float('nan') if s < 1e-9 else (s - float(np.sum(J))) / s
 
-    Paper definition (on costs):  f_SW(x) = Σ_{i∈I} J_i(x)
-    Applied to savings:           SW(d)   = Σ_{i∈I} d_i
 
-    Comparability: CUC (Cardinal Unit Comparability).
+def nbs(J, J_nt):
+    """Nash Bargaining Solution: Π_i (J_i^nt - J_i).
 
-    Interpretation: total community savings from trading. Higher is better.
-
-    Note: SW(d) = Σ dᵢ is NOT equivalent to the social optimum objective
-    Σ Jᵢ. Maximising Σ dᵢ minimises a J_nt-weighted sum of costs,
-    Σ Jᵢ/Jᵢⁿᵗ, which differs from Σ Jᵢ unless all Jᵢⁿᵗ are equal.
-    For efficiency reporting use TW (total welfare) on raw costs instead.
-
-    Returns scalar ∈ (-N, N].
+    CNC-invariant. Disagreement point x^nt gives NBS = 0 by definition.
+    Higher = fairer. Returns 0 if any prosumer is worse off than x^nt.
+    Ref: Hall et al. (2025) Table II; Facchinei & Kanzow (2010).
     """
-    return float(np.sum(d))
+    gains = np.array(J_nt) - np.array(J)
+    return float(np.prod(gains)) if np.all(gains > 0) else 0.0
 
 
-def tw(J_nt, J_so):
-    """Total Welfare — community-level efficiency gain from trading.
+def mm(x):
+    """Maximin: min_i x_i (or max_i x_i for costs — see sign convention).
 
-    TW = (Σ Jᵢⁿᵗ - Σ Jᵢ(x_SO)) / Σ Jᵢⁿᵗ
+    On J_i: returns max_i J_i (worst-off = highest cost). Lower is fairer.
+    On d_i: returns min_i d_i (worst-off = smallest savings). Higher is fairer.
+    Caller must interpret direction correctly.
 
-    Applied to raw costs (EUR), not savings fractions.
-    Comparability: CUC.
-
-    Interpretation: fractional reduction in total community cost due to
-    trading. Always ≥ 0 since x_SO minimises Σ Jᵢ and the no-trade
-    solution is always feasible (set trades to zero).
-
-    Returns scalar ∈ [0, 1].
+    Returns scalar.
     """
-    sum_nt = float(np.sum(J_nt))
-    sum_so = float(np.sum(J_so))
-    if sum_nt < 1e-9:
-        return float('nan')
-    return (sum_nt - sum_so) / sum_nt
+    return float(np.min(x))
 
 
-def mm(d):
-    """Rawlsian Maximin (Hall et al. Table I, row 1).
+def jains(x):
+    """Jain's fairness index: (Σ x_i)^2 / (N Σ x_i^2). Higher = fairer.
 
-    Paper definition (on costs):  f_MM(x) = max_{i∈I} J_i(x)
-    Applied to savings:           MM(d)   = min_{i∈I} d_i
+    On J_i: measures equality of cost distribution (CUC).
+    On d_i: measures equality of proportional savings.
+    In [1/N, 1] when all x_i > 0; loses interpretation with negative values.
 
-    Comparability: CUC on dᵢ — normalisation by Jᵢⁿᵗ makes absolute
-    savings fractions comparable without requiring CFC on raw costs.
-
-    Interpretation: the saving of the worst-off prosumer. Higher is fairer.
-    A fair allocation under MM maximises the minimum savings fraction,
-    protecting the prosumer who benefits least from trading.
-
-    Returns scalar ∈ (-∞, 1].
+    Returns scalar.
     """
-    return float(np.min(d))
+    N, s, s2 = len(x), float(np.sum(x)), float(np.sum(x**2))
+    return float('nan') if s2 < 1e-12 else s**2 / (N * s2)
 
 
-def jains(d):
-    """Jain's Fairness Index (Hall et al. Table I, row 5).
+def var(x):
+    """Variance: (1/N) Σ (x_i - x_bar)^2. Lower = fairer (zero = equal).
 
-    Paper definition (on costs):
-        f_JI(x) = (Σ_{i∈I} J_i(x))² / (M · Σ_{i∈I} J_i(x)²)
+    On J_i: dispersion of costs.
+    On d_i: dispersion of proportional savings.
 
-    Applied to savings:
-        JI(d) = (Σ dᵢ)² / (N · Σ dᵢ²)
-
-    Comparability: CUC on dᵢ — same argument as MM.
-
-    Interpretation: higher is fairer. The range [1/N, 1] holds only when
-    all dᵢ ≥ 0. With negative dᵢ the index can fall below 1/N and loses
-    its usual interpretation — flag and interpret with care.
-
-    Returns scalar (nominally ∈ [1/N, 1] but can fall below with dᵢ < 0).
+    Returns scalar >= 0.
     """
-    N      = len(d)
-    sum_d  = float(np.sum(d))
-    sum_d2 = float(np.sum(d**2))
-    if sum_d2 < 1e-12:
-        return float('nan')    # all savings zero — undefined
-    val = sum_d**2 / (N * sum_d2)
-    if any(di < 0 for di in d):
-        pass   # caller should be aware result may be < 1/N
-    return val
+    return float(np.var(x, ddof=0))
 
 
-def var_savings(d):
-    """Variance of savings.
+# ── Summary ────────────────────────────────────────────────────────────────────
 
-    Var(d) = (1/N) Σ_{i∈I} (dᵢ - d̄)²
+def compute_metrics(result, J_nt):
+    """Compute all fairness metrics at a given allocation.
 
-    Not in Hall et al. table; natural dispersion measure on dᵢ.
-    Comparability: CUC on dᵢ.
+    Primary metrics on J_i, additional metrics on d_i.
+    d_i itself reported as a vector and summarised by min/mean.
 
-    Interpretation: lower is fairer (zero = all prosumers save equally).
-    Population variance (ddof=0).
-
-    Returns scalar ∈ [0, ∞).
+    Returns dict:
+        J         : ndarray (N,) individual costs
+        J_metrics : TW, NBS, MM, JI, Var  — primary (on J_i)
+        d         : ndarray (N,) proportional savings
+        d_metrics : MM, JI, Var, mean, min — additional (on d_i)
     """
-    return float(np.var(d, ddof=0))
+    J = np.array(result['costs'])
+    d = savings(result, J_nt)
 
+    J_metrics = {
+        'TW' : tw(J_nt, J),
+        'NBS': nbs(J, J_nt),
+        'MM' : float(np.max(J)),       # worst-off cost; lower is fairer
+        'JI' : jains(J),
+        'Var': var(J),
+    }
 
-# ── Precomputation: Fair-optimal allocations ──────────────────────────────────────────────────
+    d_metrics = {
+        'MM'  : mm(d),                 # min savings fraction; higher is fairer
+        'JI'  : jains(d),
+        'Var' : var(d),
+        'mean': float(np.mean(d)),
+        'min' : float(np.min(d)),
+    }
 
-def fair_optimal_SW(data, J_nt):
-    """Allocation that maximises SW(d) = Σ d_i (utilitarian fairness optimum).
-
-    Equivalent to minimising the J_nt-weighted cost Σ J_i(x)/J_nt_i, which
-    gives more weight to prosumers with a lower no-trade cost, protecting them
-    from subsidising high-cost participants.
-
-    This is the denominator allocation for PoO_SW and the numerator for PoF_SW.
-
-    Parameters
-    ----------
-    data  : dict     scenario data dict
-    J_nt  : ndarray  (N,) no-trade costs from no_trade_costs()
-
-    Returns
-    -------
-    dict with at least 'costs' key — sufficient for PoO and PoF computation.
-
-    References
-    ----------
-    Bertsimas et al. (2011) Operations Research — utilitarian fairness.
-    Student proposal eq. (4): PoO_W = 1 − W(x^SO) / max_{x∈X} W(x).
-    """
-    N, T  = len(data['demand']), len(data['buy_price'])
-    m     = _model('fair_SW')
-    try:
-        agents = [add_prosumer(m, i, data) for i in range(N)]
-        for i, j in data['edges']:
-            for t in range(T):
-                m.addConstr(agents[i]['trade'][j,t] + agents[j]['trade'][i,t] == 0)
-
-        # Weighted objective: min Σ (1/J_nt_i) · J_i(x)
-        # Since d_i = (J_nt_i − J_i)/J_nt_i, max Σ d_i ≡ min Σ J_i/J_nt_i
-        weights = np.where(np.abs(J_nt) > 1e-9, 1.0 / np.abs(J_nt), 1.0)
-        m.setObjective(
-            gp.quicksum(w * a['cost'] for w, a in zip(weights, agents)),
-            gp.GRB.MINIMIZE)
-        _optimize(m)
-        return {'costs': np.array([a['cost'].getValue() for a in agents])}
-    finally:
-        m.dispose()
-
-
-def fair_optimal_MM(data, J_nt):
-    """Allocation that maximises MM(d) = min_i d_i (Rawlsian maximin optimum).
-
-    Reformulation as a linear programme in τ (the guaranteed savings fraction):
-
-        max  τ
-        s.t. J_i(x) ≤ (1 − τ) · J_nt_i   ∀i ∈ I      [d_i ≥ τ]
-             x ∈ X                                      [device + market constraints]
-
-    Each constraint J_i(x) ≤ (1 − τ)·J_nt_i is a convex quadratic constraint
-    (J_i is convex quadratic, J_nt_i is a positive constant) — Gurobi solves
-    convex QCQPs to global optimality.
-
-    Parameters
-    ----------
-    data  : dict     scenario data dict
-    J_nt  : ndarray  (N,) no-trade costs from no_trade_costs()
-
-    Returns
-    -------
-    dict with at least 'costs' key.
-
-    References
-    ----------
-    Rawls (1971) A Theory of Justice — maximin principle.
-    Bertsimas et al. (2011) — price of fairness under maximin.
-    Student proposal eq. (4): PoO_W = 1 − W(x^SO) / max_{x∈X} W(x).
-    """
-    N, T  = len(data['demand']), len(data['buy_price'])
-    m     = _model('fair_MM')
-    m.Params.NonConvex = 0   # confirm problem is convex
-    try:
-        agents = [add_prosumer(m, i, data) for i in range(N)]
-        for i, j in data['edges']:
-            for t in range(T):
-                m.addConstr(agents[i]['trade'][j,t] + agents[j]['trade'][i,t] == 0)
-
-        # Slack variable τ: the minimum savings fraction to maximise
-        # τ ≤ 1 always (cannot save more than 100 % of no-trade cost)
-        # τ may be negative if some prosumer is worse off at the optimum
-        tau = m.addVar(lb=-gp.GRB.INFINITY, ub=1.0, name='tau')
-
-        # J_i(x) ≤ (1 − τ) · J_nt_i   ↔   d_i(x) ≥ τ
-        denom = np.where(np.abs(J_nt) > 1e-9, J_nt, 1.0)
-        for i, (a, jnt) in enumerate(zip(agents, denom)):
-            # Rearranged: J_i(x) + jnt·τ ≤ jnt
-            # the quadratic constraint J_i(x) + |J_nt_i| · τ ≤ J_nt_i mixes a quadratic expression 
-            # in x with a linear term in τ, and Gurobi’s QCQP branch-and-bound can terminate before 
-            # proving the gap is closed; still valid upper bound
-            abs_jnt = abs(float(jnt))
-            m.addQConstr(a['cost'] + abs_jnt * tau <= jnt, name=f'MM_{i}')
-
-        m.setObjective(tau, gp.GRB.MAXIMIZE)
-        _optimize(m)
-        return {'costs': np.array([a['cost'].getValue() for a in agents])}
-    finally:
-        m.dispose()
-
-
-# ── Step 4: PoO and PoF ───────────────────────────────────────────────────────────────
-
-def poo(W_fn, d_so, d_fair):
-    """Price of Optimality for fairness metric W.
-
-    Measures how much fairness is lost by clearing at the social optimum
-    instead of the fairness optimum:
-
-        PoO_W = 1 − W(d(x^SO)) / W(d(x^W-fair))
-              = 1 − W(d_so) / W(d_fair)
-
-    PoO = 0: social optimum is already fair (no loss).
-    PoO = 1: social optimum achieves zero fairness relative to maximum.
-    PoO > 1: social optimum is worse than the worst feasible allocation
-             (possible when W can be negative, e.g. MM with d_i < 0).
-
-    Parameters
-    ----------
-    W_fn   : callable   fairness metric, e.g. sw or mm from this module
-    d_so   : ndarray    savings vector at social optimum
-    d_fair : ndarray    savings vector at fairness optimum
-
-    References
-    ----------
-    Sem. thesis proposal eq. (4): PoO_W = 1 − W(x^SO) / max_{x∈X} W(x).
-    Bertsimas et al. (2011) — price of fairness (reversed direction of comparison).
-    """
-    w_so   = W_fn(d_so)
-    w_fair = W_fn(d_fair)
-    if abs(w_fair) < 1e-12:
-        return float('nan')
-    return 1.0 - w_so / w_fair
-
-
-def pof(result_so, result_fair, J_nt):
-    """Price of Fairness: efficiency loss from pursuing the fair allocation.
-
-    Measures how much total welfare (efficiency) is sacrificed when the market
-    clears at the fairness optimum instead of the social optimum:
-
-        PoF = 1 − TW(x^fair) / TW(x^SO)
-            = 1 − (ΣJ_nt − ΣJ_fair) / (ΣJ_nt − ΣJ_SO)
-
-    PoF = 0: fair allocation is equally efficient as social optimum.
-    PoF > 0: fair allocation wastes some total welfare for fairness.
-
-    Parameters
-    ----------
-    result_so   : dict   social optimum result (needs 'costs' key)
-    result_fair : dict   fairness-optimal result (needs 'costs' key)
-    J_nt        : ndarray (N,) no-trade costs
-
-    References
-    ----------
-    Bertsimas et al. (2011) Operations Research, Definition 1.
-    Student proposal §3: price of optimality (reversed: here x^SO is efficient).
-    """
-    tw_so   = tw(J_nt, np.array(result_so['costs']))
-    tw_fair = tw(J_nt, np.array(result_fair['costs']))
-    if abs(tw_so) < 1e-12:
-        return float('nan')
-    return 1.0 - tw_fair / tw_so
+    return dict(J=J, J_metrics=J_metrics, d=d, d_metrics=d_metrics)

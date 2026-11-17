@@ -1,0 +1,1 @@
+_PROSUMER_SCENARIOS = {}

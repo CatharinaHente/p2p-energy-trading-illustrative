@@ -10,6 +10,7 @@ Units: prosumer inputs in kW / kVAR; network variables in MW / MVAR (÷1000 inte
 import math
 import gurobipy as gp
 import numpy as np
+from config import NETWORK_TOPOLOGY
 from pandapower.networks import case33bw
 
 
@@ -17,6 +18,7 @@ def load_network():
     """Load case33bw topology, impedances, loads and voltage limits."""
     net    = case33bw()
     lines  = net.line[net.line.in_service.astype(bool)]
+    length_km = lines.length_km.to_numpy(float)
     branches = [tuple(map(int, r)) for r in lines[["from_bus","to_bus"]].to_numpy()]
     if len(branches) != len(net.bus) - 1:
         raise ValueError("case33bw must be radial")

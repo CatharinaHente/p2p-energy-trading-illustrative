@@ -29,6 +29,15 @@ import zipfile
 
 import numpy as np
 import pandas as pd
+from importlib import import_module
+from trading import make_trading_edges
+
+from config import (
+    NETWORK_TOPOLOGY,
+    PROSUMER_SCENARIO,
+    TRADING_TOPOLOGY,
+    SIMBENCH_CODES,
+)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 _SB_BASE = ('/opt/anaconda3/envs/p2p/lib/python3.10/site-packages/'
@@ -105,98 +114,39 @@ EV_WORK_PROFILES = {
     'APLS_A_50.0': dict(power_kw=50.0, label='Work A 50kW'),
 }
 
-# ── Prosumer type definitions ──────────────────────────────────────────────────
-PROSUMER_TYPES = {
-    1: dict(
-        name='Residential ++',
-        description='High DER residential — PV + BESS + HP + EV',
-        demand_profile='H0-B', pv_profile='PV5', pv_capacity_kwp=12.0,
-        bess_kwh=15.0, bess_kw=7.0,
-        has_hp=True, hp_rated_kw=10.0,
-        ev_profile='HLS_A_11.0', ev_capacity_kwh=60.0, ev_type='home',
-    ),
-    2: dict(
-        name='Residential --',
-        description='Low DER residential — small EV only',
-        demand_profile='H0-C', pv_profile=None, pv_capacity_kwp=0.0,
-        bess_kwh=0.0, bess_kw=0.0,
-        has_hp=False, hp_rated_kw=0.0,
-        ev_profile='HLS_B_3.7', ev_capacity_kwh=40.0, ev_type='home',
-    ),
-    3: dict(
-        name='Residential PV only',
-        description='PV + BESS, no HP or EV — self-consumption focus',
-        demand_profile='H0-A', pv_profile='PV7', pv_capacity_kwp=8.0,
-        bess_kwh=10.0, bess_kw=5.0,
-        has_hp=False, hp_rated_kw=0.0,
-        ev_profile=None, ev_capacity_kwh=0.0, ev_type=None,
-    ),
-    4: dict(
-        name='Residential HP only',
-        description='HP only — rural household, no generation',
-        demand_profile='H0-G', pv_profile=None, pv_capacity_kwp=0.0,
-        bess_kwh=0.0, bess_kw=0.0,
-        has_hp=True, hp_rated_kw=8.0,
-        ev_profile=None, ev_capacity_kwh=0.0, ev_type=None,
-    ),
-    5: dict(
-        name='Restaurant',
-        description='Food service — midday peak, PV on roof',
-        demand_profile='G3-A', pv_profile='PV4', pv_capacity_kwp=15.0,
-        bess_kwh=10.0, bess_kw=5.0,
-        has_hp=False, hp_rated_kw=0.0,
-        ev_profile=None, ev_capacity_kwh=0.0, ev_type=None,
-    ),
-    6: dict(
-        name='Office building',
-        description='Business hours, roof PV, workplace EV charging',
-        demand_profile='G4-B', pv_profile='PV1', pv_capacity_kwp=30.0,
-        bess_kwh=20.0, bess_kw=10.0,
-        has_hp=False, hp_rated_kw=0.0,
-        ev_profile='APLS_A_11.0', ev_capacity_kwh=40.0, ev_type='work',
-    ),
-    7: dict(
-        name='School',
-        description='School hours, winter heavy S/W=0.39, large PV roof',
-        demand_profile='G4-A', pv_profile='PV5', pv_capacity_kwp=40.0,
-        bess_kwh=30.0, bess_kw=15.0,
-        has_hp=False, hp_rated_kw=0.0,
-        ev_profile=None, ev_capacity_kwh=0.0, ev_type=None,
-    ),
-    8: dict(
-        name='Day-round facility',
-        description='Hospital/care home — flat 24h demand, evening peak',
-        demand_profile='G2-A', pv_profile='PV3', pv_capacity_kwp=10.0,
-        bess_kwh=25.0, bess_kw=12.0,
-        has_hp=False, hp_rated_kw=0.0,
-        ev_profile=None, ev_capacity_kwh=0.0, ev_type=None,
-    ),
-    9: dict(
-        name='Agricultural farm',
-        description='Farm — summer heavy S/W=1.33, large PV, big BESS',
-        demand_profile='L1-A', pv_profile='PV6', pv_capacity_kwp=50.0,
-        bess_kwh=50.0, bess_kw=20.0,
-        has_hp=False, hp_rated_kw=0.0,
-        ev_profile=None, ev_capacity_kwh=0.0, ev_type=None,
-    ),
-    10: dict(
-        name='Small industry',
-        description='Industrial — high flat consumption, BESS peak shaving, EV fleet',
-        demand_profile='G1-B', pv_profile='PV2', pv_capacity_kwp=60.0,
-        bess_kwh=100.0, bess_kw=40.0,
-        has_hp=False, hp_rated_kw=0.0,
-        ev_profile='APLS_B_11.0', ev_capacity_kwh=40.0, ev_type='work',
-    ),
-}
 
-# ── Prosumer-to-bus assignment ─────────────────────────────────────────────────
-_PROSUMERS = [
-    {**PROSUMER_TYPES[1], 'bus': 5},   # Residential ++ — rich flexibility
-    {**PROSUMER_TYPES[6], 'bus': 11},  # Office          — commercial, different peak
-    {**PROSUMER_TYPES[4], 'bus': 17},  # Residential HP  — flexible load, no generation
-    {**PROSUMER_TYPES[3], 'bus': 32},  # Residential PV  — west PV, weak bus
-]
+# ── Prosumer population selection ────────────────────────────────────────────
 
+def _load_population(topology, n_prosumers):
+
+    if topology != 'ieee33' and topology not in SIMBENCH_CODES:
+        raise ValueError(f"Unknown network topology: {topology}")
+
+    module = import_module(f'populations.{topology}')
+    available = module._PROSUMER_SCENARIOS
+
+    if n_prosumers not in available:
+        raise ValueError(
+            f"Population {n_prosumers} not implemented "
+            f"for topology '{topology}'. "
+            f"Available populations: {list(available)}"
+        )
+
+    population = [p.copy() for p in available[n_prosumers]]
+
+    if len(population) != n_prosumers:
+        raise ValueError("Prosumer population size mismatch")
+
+    if len({p['bus'] for p in population}) != n_prosumers:
+        raise ValueError("Duplicate prosumer bus assignments")
+
+    return population
+
+
+_PROSUMERS = _load_population(
+    NETWORK_TOPOLOGY,
+    PROSUMER_SCENARIO,
+)
 
 # ── Data loading helpers ───────────────────────────────────────────────────────
 
@@ -426,7 +376,7 @@ def make_scenario(season='winter', seed=42, resolution_h=0.5,
     data = dict(
         demand        = demand,
         generation    = generation,
-        edges         = [(0,1),(1,2),(2,3),(0,3)],
+        edges         = make_trading_edges([p['bus'] for p in _PROSUMERS]),
         agent_bus     = [p['bus'] for p in _PROSUMERS],
         buy_price     = buy_price,
         sell_price    = sell_price,
