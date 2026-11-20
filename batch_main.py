@@ -16,7 +16,7 @@ from pathlib import Path
 import json, time
 import numpy as np
 
-from scenarios     import make_scenario_date
+from scenarios     import make_scenario_date, make_scenario_horizon
 from algo_central  import centralized
 from algo_ADMM     import distributed
 from metrics       import no_trade_costs, compute_metrics
@@ -33,8 +33,6 @@ ROOT = Path(__file__).resolve().parent
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
-
-PROSUMER_SCENARIO = 8  # Options: 4, 8, 16, 32
 
 STRUCTURE = (
     f'{NETWORK_TOPOLOGY}_{PROSUMER_SCENARIO}_{TRADING_TOPOLOGY}'
@@ -130,9 +128,12 @@ def run_date(date):
         return
 
     # ── Scenario ──────────────────────────────────────────────────────────────
-    data = make_scenario_date(date,
-                              seed=SETTINGS['seed'],
-                              resolution_h=SETTINGS['resolution_h'])
+    data = make_scenario_horizon(
+        date,
+        seed=SETTINGS['seed'],
+        resolution_h=SETTINGS['resolution_h'],
+        lookahead_h=24
+    )
 
     # ── No-trade baseline (cached) ────────────────────────────────────────────
     if _exists(date, 'no_trade'):

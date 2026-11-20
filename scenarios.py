@@ -5,7 +5,7 @@ prosumers placed at buses 5, 11, 17, 32 of case33bw.
 
 Usage
 -----
-from scenarios import make_scenario, prosumer_summary
+from scenarios import make_scenario, prosumer_summary, make_scenario_horizon
 data = make_scenario(season='winter', resolution_h=0.5)  # 30-min, T=48
 
 Resolution options
@@ -483,6 +483,79 @@ def make_scenario_date(date_str, seed=42, resolution_h=0.5):
     return data
 
 
+def make_scenario_horizon(
+    date_str,
+    seed=42,
+    resolution_h=0.5,
+    lookahead_h=24
+):
+    """Build an extended scenario for daily evaluation."""
+
+    from datetime import datetime, timedelta
+    import copy
+
+    if lookahead_h not in (0, 24):
+        raise ValueError("Supported lookahead: 0 or 24 hours")
+
+    start = datetime.strptime(date_str, '%Y-%m-%d')
+
+    n_days = 1 + lookahead_h // 24
+
+    days = [
+        make_scenario_date(
+            (start + timedelta(days=d)).strftime('%Y-%m-%d'),
+            seed=seed,
+            resolution_h=resolution_h
+        )
+        for d in range(n_days)
+    ]
+
+    data = copy.deepcopy(days[0])
+
+    # Per-prosumer time series
+    for key in [
+        'demand',
+        'generation',
+        'ev_availability',
+        'ev_driving_load',
+        'hp_base_power',
+        'hp_q_heat',
+    ]:
+        data[key] = np.concatenate(
+            [np.asarray(d[key]) for d in days],
+            axis=1
+        )
+
+    # Community time series
+    for key in [
+        'buy_price',
+        'sell_price',
+        'p2p_price',
+    ]:
+        data[key] = np.concatenate(
+            [np.asarray(d[key]) for d in days]
+        )
+
+    data['grid_limit'] = max(d['grid_limit'] for d in days)
+    data['trade_limit'] = max(d['trade_limit'] for d in days)
+
+    data['T'] = len(data['buy_price'])
+    data['T_eval'] = len(days[0]['buy_price'])
+
+    data['cyclic_soc'] = True
+    data['ev_cyclic_soc'] = False
+
+    data['lookahead_h'] = lookahead_h
+    data['evaluation_h'] = 24
+
+    data['ev_terminal_price'] = (
+        float(np.median(data['buy_price']))
+        / data['ev_eta_charge']
+    )
+
+    return data
+
+
 # ── Summary table ──────────────────────────────────────────────────────────────
 
 def prosumer_summary():
@@ -509,3 +582,4 @@ def prosumer_summary():
 if __name__ == '__main__':
     print(prosumer_summary().to_string())
     data = make_scenario('winter', resolution_h=0.5)
+    

@@ -76,7 +76,7 @@ def no_trade_costs(data):
             m.setObjective(a['cost'], gp.GRB.MINIMIZE)
             _optimize(m)   # raises if still infeasible — genuine problem
 
-        J_nt[i] = a['cost'].getValue()
+        J_nt[i] = a['cost_eval'].getValue()
         m.dispose()
         print(f"  P{i+1} no-trade cost: {J_nt[i]:.4f} EUR")
 
@@ -94,7 +94,7 @@ def savings(result, J_nt):
     Returns d : ndarray (N,) in (-inf, 1].
     """
     J     = np.array(result['costs'])
-    denom = np.where(np.abs(J_nt) > 1e-9, J_nt, 1.0)
+    denom = np.where(np.abs(J_nt) > 1e-9, np.abs(J_nt), 1.0)
     return (J_nt - J) / denom
 
 

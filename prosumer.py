@@ -11,7 +11,7 @@ BESS    battery_smax [kVA], battery_polygon_sides int=8
 PV Q    pf_pv_min float=0.90                         # REVIEW: cite grid code (EN 50549 / IEEE 1547)
 EV      ev_capacity [kWh], ev_cap_factor [], ev_power [kW], ev_smax [kVA],
         ev_polygon_sides int=8, ev_driving_load [[kWh]], ev_soc_min_departure [],
-        ev_dod_max float=0.30, ev_initial_soc [kWh], ev_availability [[0|1]],
+        ev_dod_max float=1-seasonal_threshhold, ev_initial_soc [kWh], ev_availability [[0|1]],
         ev_eta_charge, ev_eta_discharge, ev_cost [EUR/kWh], ev_v2g bool
 HP      hp_max_power [kW], hp_base_power [[kW]], hp_q_heat [[°C/h]],
         hp_T_init [°C], hp_T_min °C, hp_T_max °C, hp_cost [EUR/kWh]
@@ -95,8 +95,9 @@ def add_prosumer(model, i, data):
     if has_ev:
         cap_factor   = data.get('ev_cap_factor', [1.0] * N)[i]
         ev_cap_eff   = ev_cap_nom * cap_factor                        # Huaman-Rivera Sec 3.3
-        dod_max      = data.get('ev_dod_max', 0.30)                   # ref [16]
-        ev_soc_floor = (1.0 - dod_max) * ev_cap_eff
+        season = data.get('season', 'winter')
+        soc_min_fraction = 0.30 if season == 'winter' else 0.20
+        ev_soc_floor = soc_min_fraction * ev_cap_eff
         s_ev         = data.get('ev_smax', [ev_cap_nom] * N)[i]
         n_ev         = data.get('ev_polygon_sides', 8)
         v2g          = data.get('ev_v2g', True)
@@ -106,7 +107,7 @@ def add_prosumer(model, i, data):
         ev_q         = model.addVars(T, lb=-s_ev, ub=s_ev,                 name=f'ev_q_{i}')
         ev_soc       = model.addVars(T + 1, lb=ev_soc_floor, ub=ev_cap_eff, name=f'ev_soc_{i}')
         model.addConstr(ev_soc[0] == data['ev_initial_soc'][i])
-        if data.get('cyclic_soc', True):    # only enforce in last window
+        if data.get('ev_cyclic_soc', False):        # relaxed SoC, to combat infeasibility; calculated below from previous data
             model.addConstr(ev_soc[T] == ev_soc[0])
 
         for t in range(T):
@@ -185,25 +186,59 @@ def add_prosumer(model, i, data):
             - hp_power[t] * tan_hp                  # HP: fixed pf, inductive
             - data['demand'][i][t] * tan_load)      # load: fixed pf, inductive
 
+
     # --- Cost ---
-    q_cost = data.get('q_cost', 0.0)   # EUR/kVAR²·h — regularises Q, breaks Q degeneracy
-    p_cost = data.get('p_cost', 0.0)   # EUR/kW²·h  — regularises P, breaks P degeneracy
-    # p_cost should be small so it does not materially affect economics
-    # but large enough to select a unique point on the flat optimal face
-    cost = (
-        data['dt'] * gp.quicksum(
-            data['buy_price'][t]  * buy[t]
+    q_cost = data.get('q_cost', 0.0)
+    p_cost = data.get('p_cost', 0.0)
+
+    def operating_cost(end):
+        return data['dt'] * gp.quicksum(
+            data['buy_price'][t] * buy[t]
             - data['sell_price'][t] * sell[t]
-            - data['p2p_price'][t]  * trade.sum('*', t)
-            + data['battery_cost']  * (charge[t] + discharge[t])
-            + data.get('ev_cost',  0.0) * (ev_charge[t] + ev_discharge[t])
-            + data.get('hp_cost',  0.0) * hp_power[t]
-            + q_cost * (q_batt[t]*q_batt[t] + q_pv[t]*q_pv[t] + ev_q[t]*ev_q[t])
-            + p_cost * (charge[t]*charge[t] + discharge[t]*discharge[t]
-                        + ev_charge[t]*ev_charge[t] + ev_discharge[t]*ev_discharge[t]
-                        + gp.quicksum(trade[j,t]*trade[j,t] for j in peers))
-            for t in range(T))
-        + data['dt'] * data['trade_fee'] * trade_abs.sum())
+            - data['p2p_price'][t] * trade.sum('*', t)
+            + data['battery_cost'] * (charge[t] + discharge[t])
+            + data.get('ev_cost', 0.0) * (ev_charge[t] + ev_discharge[t])
+            + data.get('hp_cost', 0.0) * hp_power[t]
+            + q_cost * (
+                q_batt[t]**2 + q_pv[t]**2 + ev_q[t]**2
+            )
+            + p_cost * (
+                charge[t]**2 + discharge[t]**2
+                + ev_charge[t]**2 + ev_discharge[t]**2
+                + gp.quicksum(trade[j,t]**2 for j in peers)
+            )
+            + data['trade_fee'] * trade_abs.sum('*', t)
+            for t in range(end)
+        )
+
+    # Full optimization objective
+    cost = operating_cost(T)
+
+    if ev_soc is not None and not data.get('ev_cyclic_soc', False):
+        cost -= data['ev_terminal_price'] * (
+            ev_soc[T] - ev_soc[0]
+        )
+
+    # Daily evaluation cost
+    T_eval = data.get('T_eval', T)
+    cost_eval = operating_cost(T_eval)
+
+    # Account for changes in stored EV energy
+    if ev_soc is not None:
+        cost_eval -= data['ev_terminal_price'] * (
+            ev_soc[T_eval] - ev_soc[0]
+        )
+
+    # Account for changes in stored BESS energy
+    battery_value = (
+        data['ev_terminal_price']
+        * data['ev_eta_charge']
+        / data['eta_charge']
+    )
+
+    cost_eval -= battery_value * (
+        soc[T_eval] - soc[0]
+    )
 
     return dict(
         buy=buy, sell=sell, trade=trade,
@@ -212,4 +247,5 @@ def add_prosumer(model, i, data):
         ev_charge=ev_charge, ev_discharge=ev_discharge, ev_soc=ev_soc, ev_q_charger=ev_q,
         hp_power=hp_power, temp=temp,
         injection=injection, q_injection=q_injection,
-        cost=cost)
+        cost=cost,
+        cost_eval=cost_eval)

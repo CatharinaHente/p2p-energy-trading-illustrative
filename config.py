@@ -15,9 +15,14 @@ SIMBENCH_CODES = {
 
 # ── Prosumer population ──────────────────────────────────────────────────────
 
-PROSUMER_SCENARIO = 8
+PROSUMER_SCENARIO = 32
 
 # ── Trading graph ────────────────────────────────────────────────────────────
 
 TRADING_TOPOLOGY = 'cyclic'  # Options: 'cyclic', 'knn'
 K_NEIGHBOURS = 3
+
+# ── Lookahead ────────────────────────────────────────────────────────────────
+
+LOOKAHEAD_H = 24
+EVALUATION_H = 24

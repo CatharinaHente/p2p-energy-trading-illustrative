@@ -60,7 +60,8 @@ def _result(agents, iterations, residual=0., network=None):
     result.update(
         trades     = {(i,j,t): v.X for i,a in enumerate(agents)
                       for (j,t),v in a['trade'].items()},
-        costs      = np.array([a['cost'].getValue() for a in agents]),
+        costs = np.array([a['cost_eval'].getValue() for a in agents]),
+        costs_full = np.array([a['cost'].getValue() for a in agents]),
         iterations = iterations,
         residual   = residual,
         network    = network)
