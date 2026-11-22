@@ -1,0 +1,6 @@
+Building static GNEP...
+Condensed decision variables: 528
+Shared constraints: 96
+Beta dimension: 288
+Region limit: 2500
+Starting GNESetSolver...

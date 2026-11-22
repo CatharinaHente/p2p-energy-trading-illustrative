@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/catharinahente/Documents/Github/p2p-energy-trading-illustrative/.gne_experiments/worker.py", line 4, in <module>
+    from p2p.setup import to_static_gnep
+ModuleNotFoundError: No module named 'p2p'

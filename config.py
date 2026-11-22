@@ -15,7 +15,7 @@ SIMBENCH_CODES = {
 
 # ── Prosumer population ──────────────────────────────────────────────────────
 
-PROSUMER_SCENARIO = 32
+PROSUMER_SCENARIO = 4
 
 # ── Trading graph ────────────────────────────────────────────────────────────
 
