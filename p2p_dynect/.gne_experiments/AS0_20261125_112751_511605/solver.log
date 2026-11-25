@@ -1,0 +1,13 @@
+11:27:59 Nabetani ready: decisions= 40 rows= 128 beta= 8 AS0 size= 37
+11:27:59 ENTER mpsolve, warm start AS0, region_limit= 250
+11:32:35 ERROR KeyboardInterrupt()
+Traceback (most recent call last):
+  File "/Users/catharinahente/Documents/Github/p2p-energy-trading-illustrative/p2p_dynect/.gne_experiments/AS0_20261125_112751_511605/worker.py", line 27, in <module>
+    raw, status = gm._julia.mpsolve(
+  File "/Users/catharinahente/Documents/Github/dynect_py_p2p/dynect/utils/julia_bridge.py", line 59, in mpsolve
+    sol, status = jl._dynect_mpsolve(_matrix(H), _matrix(F), _vector(f), _matrix(A), _matrix(B), _vector(b),
+  File "/Users/catharinahente/.julia/packages/PythonCall/trYos/src/JlWrap/any.jl", line 263, in __call__
+    return self._jl_callmethod($(pyjl_methodnum(pyjlany_call)), args, kwargs)
+  File "/opt/anaconda3/envs/p2p/lib/python3.10/abc.py", line 121, in __subclasscheck__
+    def __subclasscheck__(cls, subclass):
+KeyboardInterrupt

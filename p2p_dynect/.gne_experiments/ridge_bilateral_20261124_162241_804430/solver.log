@@ -1,0 +1,6 @@
+16:22:49 Worker started
+16:22:49 Loading dynamic game
+16:22:49 Constructing StaticGNEP
+16:22:49 StaticGNEP ready decisions = 264 shared = 48 beta = 144 time = 0.042 s
+16:22:49 ENTER GNESetSolver / Julia
+16:22:49 Region limit = 100 verbose = 2

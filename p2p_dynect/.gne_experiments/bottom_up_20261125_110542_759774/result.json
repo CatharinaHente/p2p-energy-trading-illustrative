@@ -1,0 +1,7 @@
+{
+  "status": "Status.REGION_LIMIT",
+  "gne_regions": 0,
+  "elapsed_solver_s": 46.12,
+  "decisions": 40,
+  "beta": 8
+}
