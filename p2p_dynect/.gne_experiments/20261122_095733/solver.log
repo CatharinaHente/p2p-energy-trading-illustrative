@@ -1,4 +1,0 @@
-09:57:36 Constructing StaticGNEP...
-09:57:36 StaticGNEP ready after 0.0 s: n= 528 m_sh= 96 beta= 288
-09:57:36 Starting GNESetSolver; verbose=2, region_limit= 100
-09:57:36 ENTER Julia ParametricDAQP.mpsolve (region exploration)

@@ -1,20 +1,37 @@
-"""Radial LinDistFlow network model built on pandapower case33bw.
+"""Radial LinDistFlow network model (IEEE33 case33bw or SimBench LV feeders).
 
-load_network()    — reads topology, impedances and loads from case33bw
+load_network()    — reads topology, impedances and loads of config.NETWORK_TOPOLOGY
 add_network()     — adds LinDistFlow constraints to a Gurobi model
 evaluate_feeder() — post-hoc forward sweep; reports violations, never enforces
 
 Sign convention (P and Q): positive injection = prosumer exports → reduces upstream flow.
 Units: prosumer inputs in kW / kVAR; network variables in MW / MVAR (÷1000 internally).
+
+Every loader returns the same dict: buses numbered 0..bus_count-1, `branches`
+oriented parent → child from `root`, per-branch r/x [Ω] and length [km], static
+bus loads, voltage limits, and `line_limit_mva` (the feeder's cable rating).
 """
+import copy
+import functools
 import math
 import gurobipy as gp
 import numpy as np
-from config import NETWORK_TOPOLOGY
+from config import NETWORK_TOPOLOGY, SIMBENCH_CODES
 from pandapower.networks import case33bw
 
 
-def load_network():
+def load_network(topology=None):
+    """Load the configured feeder (default: config.NETWORK_TOPOLOGY)."""
+    topology = NETWORK_TOPOLOGY if topology is None else topology
+    if topology == 'ieee33':
+        return _load_ieee33()
+    if topology in SIMBENCH_CODES:
+        return copy.deepcopy(_load_simbench_lv(SIMBENCH_CODES[topology]))
+    raise ValueError(f"Unknown network topology: {topology!r}. "
+                     f"Options: 'ieee33', {sorted(SIMBENCH_CODES)}")
+
+
+def _load_ieee33():
     """Load case33bw topology, impedances, loads and voltage limits."""
     net    = case33bw()
     lines  = net.line[net.line.in_service.astype(bool)]
@@ -42,7 +59,73 @@ def load_network():
         q_load_mvar  = q_load,
         voltage_kv   = net.bus.vn_kv.to_numpy(float),
         voltage_min  = net.bus.min_vm_pu.to_numpy(float),
-        voltage_max  = net.bus.max_vm_pu.to_numpy(float))
+        voltage_max  = net.bus.max_vm_pu.to_numpy(float),
+        length_km    = length_km,
+        line_limit_mva = 5.0)
+
+
+@functools.lru_cache(maxsize=None)
+def _load_simbench_lv(code):
+    """SimBench LV feeder below its MV/LV transformer, renumbered from the LV busbar.
+
+    The transformer is not modelled: the LV busbar is the root, held at 1.0 pu
+    (as the IEEE33 root). Only the LV side is kept; buses are renumbered 0..B-1
+    in breadth-first order from the root and every line is oriented parent → child.
+    `pp_bus` maps internal index → original pandapower bus id, `load_buses` lists
+    the internal indices of buses with SimBench household/commercial loads.
+    """
+    import simbench as sb
+    net = sb.get_simbench_net(code)
+    if len(net.trafo) != 1 or len(net.switch):
+        raise ValueError(f"{code}: expected one MV/LV transformer and no switches")
+    root_pp = int(net.trafo.lv_bus.iloc[0])
+    lines = net.line[net.line.in_service.astype(bool)]
+    lv_buses = set(map(int, net.bus.index[net.bus.vn_kv < 1.0]))
+    adj = {b: [] for b in lv_buses}
+    for k, (a, b) in enumerate(lines[['from_bus', 'to_bus']].to_numpy(int)):
+        adj[int(a)].append((int(b), k)); adj[int(b)].append((int(a), k))
+    order, parent_line, seen = [root_pp], {}, {root_pp}
+    for u in order:                                       # BFS from the LV busbar
+        for v, k in adj[u]:
+            if v not in seen:
+                seen.add(v); parent_line[v] = (u, k); order.append(v)
+    if len(order) != len(lv_buses) or len(lines) != len(lv_buses) - 1:
+        raise ValueError(f"{code}: LV network is not a connected radial tree")
+    index = {b: i for i, b in enumerate(order)}
+    branches, r, x, length = [], [], [], []
+    for v in order[1:]:
+        u, k = parent_line[v]
+        ln = lines.iloc[k]
+        branches.append((index[u], index[v]))
+        r.append(float(ln.r_ohm_per_km * ln.length_km))
+        x.append(float(ln.x_ohm_per_km * ln.length_km))
+        length.append(float(ln.length_km))
+    B = len(order)
+    p_load, q_load = np.zeros(B), np.zeros(B)
+    for ld in net.load.itertuples():
+        if ld.in_service and int(ld.bus) in index:
+            p_load[index[int(ld.bus)]] += float(ld.p_mw * ld.scaling)
+            q_load[index[int(ld.bus)]] += float(ld.q_mvar * ld.scaling)
+    bus = net.bus.loc[order]
+    vn = bus.vn_kv.to_numpy(float)
+    rating = float((np.sqrt(3) * lines.max_i_ka * net.bus.loc[lines.from_bus, 'vn_kv'].to_numpy()).min())
+    return dict(
+        name         = f"SimBench {code} (LV side)",
+        root         = 0,
+        root_voltage = 1.0,
+        bus_count    = B,
+        branches     = branches,
+        r_ohm        = np.array(r),
+        x_ohm        = np.array(x),
+        p_load_mw    = p_load,
+        q_load_mvar  = q_load,
+        voltage_kv   = vn,
+        voltage_min  = bus.min_vm_pu.fillna(0.9).to_numpy(float),
+        voltage_max  = bus.max_vm_pu.fillna(1.1).to_numpy(float),
+        length_km    = np.array(length),
+        line_limit_mva = rating,
+        pp_bus       = list(order),
+        load_buses   = sorted(index[int(b)] for b in net.load.bus.unique() if int(b) in index))
 
 
 def add_network(model, injections_kw, agent_bus, T,

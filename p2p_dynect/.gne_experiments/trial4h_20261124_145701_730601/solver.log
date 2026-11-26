@@ -1,4 +1,0 @@
-14:57:05 Constructing StaticGNEP...
-14:57:05 StaticGNEP ready: decisions = 264 shared = 48 beta = 144
-14:57:05 Starting GNESetSolver: verbose=2 region_limit = 100 beta = 5.0
-14:57:05 ENTER Julia ParametricDAQP.mpsolve

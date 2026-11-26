@@ -1,0 +1,202 @@
+<title>Strategic GNE Selection</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Layout: single reading column; method as a short numbered pipeline, results as one table plus a gains chart */
+:root{
+  --bg:#f6f7f8; --surface:#ffffff; --fg:#18201f; --muted:#5b6866; --line:#dce3e1;
+  --accent:#0f7a6c; --accent-soft:#e0f2ef;
+  --s1:#0f7a6c; --s2:#c46a1a; --s3:#5b5fc7;
+  --ok:#1d7a4f; --ok-soft:#e3f3ea; --bad:#b3261e; --bad-soft:#fbe6e4; --warn:#a35f00; --warn-soft:#fbf0dc;
+  --font-display:"Space Grotesk",system-ui,sans-serif;
+  --font-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f1514; --surface:#161e1d; --fg:#e3ebe9; --muted:#9aa9a6; --line:#2a3634;
+  --accent:#5fc7b6; --accent-soft:#163430; --s1:#5fc7b6; --s2:#eba15c; --s3:#a3a6f2;
+  --ok:#5cc28f; --ok-soft:#15301f; --bad:#f08a80; --bad-soft:#3a1714; --warn:#e0a54a; --warn-soft:#352611; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f1514; --surface:#161e1d; --fg:#e3ebe9; --muted:#9aa9a6; --line:#2a3634;
+  --accent:#5fc7b6; --accent-soft:#163430; --s1:#5fc7b6; --s2:#eba15c; --s3:#a3a6f2;
+  --ok:#5cc28f; --ok-soft:#15301f; --bad:#f08a80; --bad-soft:#3a1714; --warn:#e0a54a; --warn-soft:#352611; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-body);font-size:16px;line-height:1.6}
+.wrap{max-width:940px;margin:0 auto;padding-block:48px 80px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:52px}
+h1,h2,h3{font-family:var(--font-display);text-wrap:balance;line-height:1.2;margin:0}
+h1{font-size:clamp(1.9rem,4vw,2.5rem);font-weight:700}
+h2{font-size:1.45rem;font-weight:600}
+h3{font-size:1.05rem;font-weight:600}
+p{margin:0;max-width:68ch}
+section{display:flex;flex-direction:column;gap:16px}
+.eyebrow{font-family:var(--font-mono);font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.lede{font-size:1.12rem}
+.meta{display:flex;flex-wrap:wrap;gap:8px 20px;font-size:.88rem;color:var(--muted)}
+.meta b{color:var(--fg);font-weight:500}
+code{font-family:var(--font-mono);font-size:.88em}
+.claim{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px 20px;display:flex;flex-direction:column;gap:8px}
+.claim .math{font-family:var(--font-mono);font-size:.92rem;color:var(--accent);overflow-x:auto;white-space:nowrap}
+.steps{display:flex;flex-direction:column;gap:12px;counter-reset:s}
+.step{display:grid;grid-template-columns:34px 1fr;gap:14px;align-items:start}
+.step::before{counter-increment:s;content:counter(s);font-family:var(--font-display);font-weight:600;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent)}
+.step > div{display:flex;flex-direction:column;gap:3px;min-width:0}
+.cands{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+.cands > div{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.cands small{color:var(--muted);font-size:.86rem;line-height:1.45}
+.pill{display:inline-block;font-family:var(--font-mono);font-size:.72rem;letter-spacing:.04em;text-transform:uppercase;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.pill.ok{background:var(--ok-soft);color:var(--ok)} .pill.bad{background:var(--bad-soft);color:var(--bad)} .pill.warn{background:var(--warn-soft);color:var(--warn)}
+.tablebox{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:.9rem;font-variant-numeric:tabular-nums}
+th,td{padding:9px 12px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child,.l{text-align:left}
+th{font-family:var(--font-mono);font-weight:500;font-size:.74rem;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);background:var(--bg)}
+tr:last-child td{border-bottom:0}
+tr.hl td{background:var(--accent-soft)}
+.chart{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:20px;display:flex;flex-direction:column;gap:16px}
+.group{display:grid;grid-template-columns:44px 1fr;gap:12px;align-items:center}
+.group .who{font-family:var(--font-mono);font-size:.85rem;color:var(--muted)}
+.bars{display:flex;flex-direction:column;gap:4px;min-width:0}
+.bar{display:flex;align-items:center;gap:8px;font-family:var(--font-mono);font-size:.78rem;font-variant-numeric:tabular-nums}
+.bar i{display:block;height:12px;border-radius:2px;background:var(--c)}
+.legend{display:flex;flex-wrap:wrap;gap:16px;font-size:.82rem;color:var(--muted)}
+.legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px;background:var(--c)}
+ul{margin:0;padding-left:1.2em;display:flex;flex-direction:column;gap:6px;max-width:70ch}
+.alert{border:1px solid var(--warn);background:var(--warn-soft);border-radius:8px;padding:16px 18px;display:flex;flex-direction:column;gap:8px}
+.alert h3{color:var(--warn)}
+footer{font-size:.85rem;color:var(--muted);border-top:1px solid var(--line);padding-top:20px}
+</style>
+
+<div class="wrap">
+
+<header style="display:flex;flex-direction:column;gap:14px">
+  <div class="eyebrow">P2P energy trading · fair equilibrium selection</div>
+  <h1>Strategic GNE selection without enumerating the GNE set</h1>
+  <p class="lede">DyNECT enumeration did not produce any GNE regions. This approach builds fair equilibrium candidates directly with convex optimization over the exact bilateral game, then checks each candidate by letting every prosumer compute its own best response.</p>
+  <div class="meta">
+    <span>Network <b>IEEE33, 4 prosumers, cyclic bilateral trading</b></span>
+    <span>Model <b>24 h at 1 h, active power, exact reciprocity</b></span>
+    <span>Code <b><code>strategic_GNE_selection/</code></b></span>
+  </div>
+</header>
+
+<section>
+  <h2>Why this works</h2>
+  <div class="claim">
+    <h3>Pareto-efficient points of a separable game are GNEs</h3>
+    <p>If each player's cost depends only on its own decisions, J<sub>i</sub>(u<sub>i</sub>), and the shared feasible set K is jointly convex, then any Pareto-efficient feasible point is a GNE. A profitable unilateral deviation would lower J<sub>i</sub> and leave every other J<sub>j</sub> unchanged, which contradicts Pareto efficiency.</p>
+    <div class="math">w ≻ 0 &nbsp;⇒&nbsp; argmin<sub>u∈K</sub> Σ<sub>i</sub> w<sub>i</sub> J<sub>i</sub>(u<sub>i</sub>) &nbsp;is a Pareto-efficient GNE</div>
+    <p>Varying the weights w therefore moves along a family of equilibria, and fairness can be chosen among them. The converse does not hold: with exact bilateral reciprocity, a prosumer cannot change a trade unilaterally, so many Pareto-inefficient trade schedules are GNEs as well.</p>
+  </div>
+  <p>The argument breaks when costs couple players, for example through a community mismatch penalty or regularization across players. That is why the workflow starts with a separability audit.</p>
+</section>
+
+<section>
+  <h2>Workflow per day</h2>
+  <div class="steps">
+    <div class="step"><div><h3>Build and certify the reduced model</h3><p>The day's 30 min scenario is aggregated to 24 × 1 h. Exact duplicate rows are removed, feeder limits are certified redundant by injection intervals, single-owner rows are moved to local constraints, and LP-implied local rows are pruned. The model is saved as a <code>.npz</code> and reloaded with a matrix check.</p></div></div>
+    <div class="step"><div><h3>Audit the costs</h3><p>Two questions. First, are the costs decoupled? Cross-player Hessian blocks must be zero, and random changes to one player's decisions must leave every other player's € cost unchanged. Second, does the optimized cost equal the reported € cost? This is tested along joint moves that keep every equality of the game (see below). Regularization is zero. The notebook stops if any check fails.</p></div></div>
+    <div class="step"><div><h3>Generate candidates</h3><p>Equal-weight vGNE and a no-trade benchmark, then the fairness-oriented candidates described below. Each solve is cached against the model hash and solver options.</p></div></div>
+    <div class="step"><div><h3>Verify every candidate</h3><p>For each prosumer, fix all other players' decisions, re-optimize all of that prosumer's controls under the full shared constraints, and record the cost improvement. A candidate counts as <code>verified_GNE</code> when no player can improve by more than 10⁻⁵ € (relative).</p></div></div>
+    <div class="step"><div><h3>Compare fairness</h3><p>Gains are measured against the no-trade benchmark: total gain, worst loss, variance, Jain index on savings, log Nash product Σ log(gain<sub>i</sub>), number of losers, individual rationality.</p></div></div>
+  </div>
+</section>
+
+<section>
+  <h2>The cost audit</h2>
+  <p>The first version compared the optimized cost with the € cost after random changes to the decisions. It failed by 0.018 € even though the two agree at every feasible schedule. The € accounting credits the energy left in each home battery at the end of the day (0.26 €/kWh). The game objective has no such term, because it forces the battery to end the day at the same charge it started with. Random changes broke that rule, so the credit appeared and was flagged as a mismatch.</p>
+  <p>The audit now tests calibration only along moves that keep every equality of the game: end-of-day battery charge, energy balance and trade reciprocity. These moves are joint, so changes in reciprocal trades are covered too. Each test move is about 1 kW per variable, and the tolerance is relative (10⁻⁶). The independence check still uses arbitrary moves.</p>
+  <div class="tablebox"><table>
+    <tr><th class="l">Test on the 2016-06-15 model</th><th>Max relative mismatch</th><th class="l">Audit</th></tr>
+    <tr><td>Real model</td><td>4·10⁻¹⁴</td><td class="l"><span class="pill ok">passes</span></td></tr>
+    <tr><td>Injected: grid price +0.05 €/kWh</td><td>0.79</td><td class="l"><span class="pill bad">fails</span></td></tr>
+    <tr><td>Injected: sell price +1 %</td><td>0.094</td><td class="l"><span class="pill bad">fails</span></td></tr>
+    <tr><td>Injected: P2P price +0.1 %</td><td>0.022</td><td class="l"><span class="pill bad">fails</span></td></tr>
+    <tr><td>Injected: quadratic power cost +1 %</td><td>0.012</td><td class="l"><span class="pill bad">fails</span></td></tr>
+    <tr><td>Injected: trade fee +1 %</td><td>0.0048</td><td class="l"><span class="pill bad">fails</span></td></tr>
+  </table></div>
+</section>
+
+<section>
+  <h2>Candidate families</h2>
+  <div class="cands">
+    <div><h3>Positive weights</h3><small>Random log-normal weights. Each one is a Pareto-efficient GNE whenever the costs are separable.</small></div>
+    <div><h3>Nash bargaining</h3><small>Frank–Wolfe on Σ log(savings). The weights implied at the iterate are then solved as a weighted QP to obtain a verified GNE near it.</small></div>
+    <div><h3>Monotone minimax / max-min savings</h3><small>Single convex program with a small sum-cost tie weight, so it stays Pareto-monotone.</small></div>
+    <div><h3>Pareto refinement</h3><small>Cap each cost at a fair target's level and minimize the weighted sum. This pushes any feasible fair point to a GNE.</small></div>
+    <div><h3>Trade-schedule search</h3><small>Perturb the bilateral schedule, keep both directions reciprocal, and re-optimize devices. Usually finds Pareto-inefficient GNEs.</small></div>
+    <div><h3>30 min reconfirmation</h3><small>Optional: hold the trades constant over both half-hours, re-optimize on the 30 min model and verify again.</small></div>
+  </div>
+</section>
+
+<section>
+  <h2>Model size after reduction</h2>
+  <div class="tablebox"><table>
+    <tr><th>Stage</th><th>Decisions</th><th>Shared rows</th><th>Local rows</th><th>State rows</th><th>β (for reference)</th></tr>
+    <tr><td>Full feeder, 24 × 1 h</td><td>1,056</td><td>3,264</td><td>3,072</td><td>342</td><td>9,792</td></tr>
+    <tr><td>Exact local duplicates</td><td>1,056</td><td>3,264</td><td>3,072</td><td>342</td><td>9,792</td></tr>
+    <tr><td>Certified feeder screen</td><td>1,056</td><td>192</td><td>3,072</td><td>342</td><td>576</td></tr>
+    <tr><td>Move one-player shared rows</td><td>1,056</td><td>192</td><td>3,072</td><td>342</td><td>576</td></tr>
+    <tr class="hl"><td>LP-implied local rows</td><td>1,056</td><td>192</td><td>2,278</td><td>342</td><td>576</td></tr>
+  </table></div>
+  <p>Values for 2016-06-15; 2016-06-14 is identical except for 2,276 local rows. The condensed game keeps 922 of its 2,812 constraint rows as equality pairs, which leaves 595 free directions.</p>
+</section>
+
+<section>
+  <h2>Results for 2016-06-15</h2>
+  <p>31 candidates, of which 30 passed best-response verification. The whole run took 15 s.</p>
+  <div class="tablebox"><table>
+    <tr><th>Candidate</th><th class="l">GNE</th><th>Total gain €</th><th>Jain (savings)</th><th>log Nash product</th><th>Gain variance</th><th class="l">Losers vs no trade</th></tr>
+    <tr><td>vGNE (equal weights)</td><td class="l"><span class="pill ok">verified</span></td><td>2.262</td><td>0.392</td><td>−6.51</td><td>0.496</td><td class="l">none</td></tr>
+    <tr class="hl"><td>Nash-derived weights</td><td class="l"><span class="pill ok">verified</span></td><td>2.194</td><td>0.760</td><td>−3.14</td><td>0.095</td><td class="l">none</td></tr>
+    <tr><td>Random weights, no losers (6)</td><td class="l"><span class="pill ok">all verified</span></td><td>2.004–2.177</td><td>0.681–0.768</td><td>−3.61 to −3.16</td><td>0.090–0.118</td><td class="l">none</td></tr>
+    <tr><td>Random weights, with losers (10)</td><td class="l"><span class="pill ok">all verified</span></td><td>−0.620–2.205</td><td>n/a</td><td>n/a</td><td>0.27–45.1</td><td class="l"><span class="pill warn">1–2 prosumers</span></td></tr>
+    <tr><td>Perturbed trade schedules (10)</td><td class="l"><span class="pill ok">all verified</span></td><td>1.913–2.064</td><td>n/a</td><td>n/a</td><td>0.50–0.61</td><td class="l"><span class="pill warn">1–2 prosumers</span></td></tr>
+    <tr><td>Nash bargaining iterate</td><td class="l"><span class="pill bad">not verified</span></td><td>2.194</td><td>0.760</td><td>−3.15</td><td>0.095</td><td class="l">none</td></tr>
+    <tr><td>Minimax (3), max-min savings (2), Pareto refinement</td><td class="l"><span class="pill warn">not solved</span></td><td colspan="5" class="l">Gurobi returned status 13 (suboptimal), so the suite skips them</td></tr>
+  </table></div>
+
+  <div class="chart" role="img" aria-label="Per-prosumer savings versus no trade for the vGNE and the Nash-derived weighted GNE">
+    <h3>Savings versus no trade, per prosumer (€)</h3>
+    <div class="group"><span class="who">P1</span><div class="bars">
+      <span class="bar" style="--c:var(--s1)"><i style="width:23.0%"></i>0.41</span>
+      <span class="bar" style="--c:var(--s2)"><i style="width:43.5%"></i>0.78</span></div></div>
+    <div class="group"><span class="who">P2</span><div class="bars">
+      <span class="bar" style="--c:var(--s1)"><i style="width:97.6%"></i>1.76</span>
+      <span class="bar" style="--c:var(--s2)"><i style="width:51.2%"></i>0.92</span></div></div>
+    <div class="group"><span class="who">P3</span><div class="bars">
+      <span class="bar" style="--c:var(--s1)"><i style="width:2.3%"></i>0.04</span>
+      <span class="bar" style="--c:var(--s2)"><i style="width:14.1%"></i>0.25</span></div></div>
+    <div class="group"><span class="who">P4</span><div class="bars">
+      <span class="bar" style="--c:var(--s1)"><i style="width:2.7%"></i>0.05</span>
+      <span class="bar" style="--c:var(--s2)"><i style="width:13.1%"></i>0.24</span></div></div>
+    <div class="legend"><span style="--c:var(--s1)">vGNE</span><span style="--c:var(--s2)">Nash-derived weights (w = 0.58, 0.49, 1.80, 1.93)</span></div>
+  </div>
+
+  <ul>
+    <li><strong>The vGNE is efficient but uneven.</strong> P2 (office) takes 78 % of the 2.26 € total gain. P3 and P4 get about 4–5 cents each.</li>
+    <li><strong>The Nash-derived weighted GNE is the best fair candidate.</strong> It is a verified GNE, raises the Jain index from 0.39 to 0.76 and multiplies the savings of P3 and P4 by 5–6. The total gain drops by only 0.07 € (3 %).</li>
+    <li><strong>It matches Nash bargaining.</strong> The Frank–Wolfe iterate (gap 2.8·10⁻⁴) differs from it by 6·10⁻⁵ € in total gain. The iterate itself just fails verification: each player could still improve by at most 0.004 cents.</li>
+    <li><strong>Random weights need care.</strong> 10 of 17 random weight vectors give verified, Pareto-efficient GNEs in which one or two prosumers end up worse off than without trading.</li>
+    <li><strong>Perturbing the trade schedule gives worse equilibria.</strong> All 10 perturbed schedules are verified GNEs: exact reciprocity stops any single prosumer from changing a trade. Every one of them loses 0.2–0.35 € of total gain and leaves 1–2 losers. This is the Pareto-inefficient part of the GNE set.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Cross-check: 2016-06-14</h2>
+  <p>An earlier version of the suite, before the audit fix, ran 16 candidates on 2016-06-14. It shows the same pattern. The vGNE gains 3.50 €, of which P2 gets 68 %, with a Jain index of 0.46. Five positive-weight GNEs reach a Jain index of 0.65–0.66 for 0.10 € (3 %) less total gain. The unconverged Nash iterate (Jain 0.67) failed verification by 0.03–0.1 cents. That run produced no Nash-derived weighted candidate. Re-running it with the current code would make the two dates directly comparable.</p>
+</section>
+
+<section>
+  <h2>Scope of the claims</h2>
+  <ul>
+    <li><code>verified_GNE</code> is a numerical best-response check on the saved 24 h / 1 h active-power game. It does not enumerate the GNE set and does not prove global fairness optimality.</li>
+    <li>The 1 h aggregation is an approximation of the 30 min model, and feeder redundancy certified at 1 h does not carry over automatically.</li>
+    <li>Nash bargaining and Jain scores are only defined when every individual gain is non-negative (Jain) or positive (log Nash product).</li>
+    <li>Reference: Hall, Nax &amp; Bolognani (2026), <em>Fair Selection of Generalized Nash Equilibria: A Comparability Perspective</em>, arXiv:2611.09060.</li>
+  </ul>
+</section>
+
+<footer>
+  Sources: <code>structures/ieee33_4_cyclic/results/2016-06-15/fair_gne/1h/</code> (<code>comparison.csv</code>, <code>cost_audit.json</code>, <code>reduction_audit.json</code>, candidate <code>.npz</code> files) and the same folder for 2016-06-14. Code: <code>strategic_GNE_selection/strategic_GNE_selection.py</code>, run through <code>strategic_GNE_selection_demo.ipynb</code>.
+</footer>
+</div>

@@ -1,0 +1,270 @@
+<title>DyNECT P2P Reductions</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Layout: single reading column, wide tables scroll in place; stage ladder as the spine of the page */
+:root{
+  --bg:#f6f7f9; --surface:#ffffff; --fg:#17202b; --muted:#5a6675; --line:#dde2e8;
+  --accent:#1f5fbf; --accent-soft:#e6eefb;
+  --exact:#1d7a4f; --exact-soft:#e3f3ea;
+  --approx:#a35f00; --approx-soft:#fbf0dc;
+  --fail:#b3261e; --fail-soft:#fbe6e4;
+  --bar:#1f5fbf;
+  --font-display:"Space Grotesk",system-ui,sans-serif;
+  --font-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f141a; --surface:#161d25; --fg:#e4e9ef; --muted:#9aa6b4; --line:#2a3440;
+  --accent:#7aa9f0; --accent-soft:#1b2a40;
+  --exact:#5cc28f; --exact-soft:#15301f; --approx:#e0a54a; --approx-soft:#352611;
+  --fail:#f08a80; --fail-soft:#3a1714; --bar:#7aa9f0; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f141a; --surface:#161d25; --fg:#e4e9ef; --muted:#9aa6b4; --line:#2a3440;
+  --accent:#7aa9f0; --accent-soft:#1b2a40;
+  --exact:#5cc28f; --exact-soft:#15301f; --approx:#e0a54a; --approx-soft:#352611;
+  --fail:#f08a80; --fail-soft:#3a1714; --bar:#7aa9f0; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--font-body);font-size:16px;line-height:1.6}
+.wrap{max-width:960px;margin:0 auto;padding-block:48px 80px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:56px}
+h1,h2,h3{font-family:var(--font-display);text-wrap:balance;line-height:1.2;margin:0}
+h1{font-size:clamp(1.9rem,4vw,2.6rem);font-weight:700;letter-spacing:-.01em}
+h2{font-size:1.5rem;font-weight:600}
+h3{font-size:1.1rem;font-weight:600}
+p{margin:0;max-width:68ch}
+section{display:flex;flex-direction:column;gap:18px}
+.eyebrow{font-family:var(--font-mono);font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.lede{font-size:1.12rem;color:var(--fg)}
+.meta{display:flex;flex-wrap:wrap;gap:8px 20px;font-size:.88rem;color:var(--muted)}
+.meta b{color:var(--fg);font-weight:500}
+code,.mono{font-family:var(--font-mono);font-size:.88em}
+.verdict{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+.verdict > div{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px 20px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.verdict .num{font-family:var(--font-display);font-size:1.9rem;font-weight:600;font-variant-numeric:tabular-nums}
+.verdict .ok .num{color:var(--exact)} .verdict .bad .num{color:var(--fail)} .verdict .mid .num{color:var(--accent)}
+.verdict small{color:var(--muted);font-size:.88rem;line-height:1.45}
+.pill{display:inline-block;font-family:var(--font-mono);font-size:.72rem;letter-spacing:.04em;text-transform:uppercase;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.pill.exact{background:var(--exact-soft);color:var(--exact)}
+.pill.approx{background:var(--approx-soft);color:var(--approx)}
+.pill.fail{background:var(--fail-soft);color:var(--fail)}
+.pill.info{background:var(--accent-soft);color:var(--accent)}
+.tablebox{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:.9rem;font-variant-numeric:tabular-nums}
+th,td{padding:9px 12px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+td.l,th.l{text-align:left}
+th{font-family:var(--font-mono);font-weight:500;font-size:.74rem;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);background:var(--bg)}
+tr:last-child td{border-bottom:0}
+td.wrap-cell{white-space:normal;min-width:220px;text-align:left}
+.ladder{display:flex;flex-direction:column;gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:20px}
+.rung{display:grid;grid-template-columns:minmax(150px,240px) 1fr 70px;gap:12px;align-items:center;font-size:.88rem}
+.rung .lab{min-width:0}
+.rung .track{height:14px;background:var(--bg);border-radius:3px;position:relative;overflow:hidden}
+.rung .fill{position:absolute;inset:0 auto 0 0;background:var(--bar);border-radius:3px}
+.rung.approx .fill{background:var(--approx)}
+.rung.toy .fill{background:var(--muted)}
+.rung .val{font-family:var(--font-mono);text-align:right;font-variant-numeric:tabular-nums}
+.legend{display:flex;flex-wrap:wrap;gap:16px;font-size:.82rem;color:var(--muted)}
+.legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px;background:var(--c)}
+.steps{display:flex;flex-direction:column;gap:14px;counter-reset:s}
+.step{display:grid;grid-template-columns:36px 1fr;gap:14px;align-items:start}
+.step::before{counter-increment:s;content:counter(s);font-family:var(--font-display);font-weight:600;width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent)}
+.step > div{display:flex;flex-direction:column;gap:4px;min-width:0}
+.pipeline{font-family:var(--font-mono);font-size:.85rem;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;white-space:nowrap}
+ul{margin:0;padding-left:1.2em;display:flex;flex-direction:column;gap:6px;max-width:70ch}
+.note{border-left:3px solid var(--approx);padding:4px 0 4px 14px;color:var(--muted);font-size:.92rem;max-width:70ch}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:24px}
+.two > div{display:flex;flex-direction:column;gap:10px;min-width:0}
+footer{font-size:.85rem;color:var(--muted);border-top:1px solid var(--line);padding-top:20px}
+@media (max-width:560px){.rung{grid-template-columns:1fr 60px}.rung .track{grid-column:1 / -1;order:3}}
+</style>
+
+<div class="wrap">
+
+<header style="display:flex;flex-direction:column;gap:14px">
+  <div class="eyebrow">P2P energy trading · GNE set computation with DyNECT</div>
+  <h1>Reducing the IEEE33 P2P game for DyNECT GNE-set enumeration</h1>
+  <p class="lede">I reduced the dynamic four-prosumer trading game from 39,168 to 36 Nabetani parameters, checking each step against a vGNE and the original centralized solver. Every exact reduction left the equilibrium unchanged. <code>GNESetSolver</code> still returned no GNE region in any run, including a 40-variable toy.</p>
+  <div class="meta">
+    <span>Day <b>2016-01-07</b> (winter)</span>
+    <span>Network <b>IEEE33, 4 prosumers, cyclic trading</b></span>
+    <span>Seed <b>42</b></span>
+    <span>Experiments <b>22–25 Nov 2026</b></span>
+  </div>
+</header>
+
+<section>
+  <h2>Outcome</h2>
+  <div class="verdict">
+    <div class="ok"><span class="num">0.0 €</span><small>Largest per-prosumer vGNE cost change caused by any exact reduction at a fixed resolution.</small></div>
+    <div class="mid"><span class="num">39,168 → 36</span><small>Nabetani β dimension, from the full 48 h / 30 min game to a 24 h / 4 h community-clearing game.</small></div>
+    <div class="bad"><span class="num">0</span><small>GNE regions returned by <code>GNESetSolver</code> across 18 logged runs, from 40 to 528 decision variables.</small></div>
+  </div>
+</section>
+
+<section>
+  <h2>Setup</h2>
+  <div class="two">
+    <div>
+      <h3>Game</h3>
+      <ul>
+        <li>Time-varying LQ game (<code>DynLQGameTV</code>) built from the study's own scenario data: SimBench demand/PV, 2016 prices, BESS, EV, heat pump, bilateral P2P trades with reciprocity.</li>
+        <li>Active power only, LinDistFlow feeder constraints (flow and voltage) as shared inequalities. No reactive power.</li>
+        <li>Baseline: 48 h horizon (24 h evaluated + 24 h lookahead) at 30 min. That gives 96 steps.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Prosumers</h3>
+      <div class="tablebox"><table>
+        <tr><th>ID</th><th class="l">Type</th><th>Bus</th><th>BESS kWh</th><th>EV kWh</th><th>HP kW</th></tr>
+        <tr><td>P1</td><td class="l">Residential ++</td><td>5</td><td>15</td><td>60</td><td>10</td></tr>
+        <tr><td>P2</td><td class="l">Office</td><td>11</td><td>20</td><td>40</td><td>0</td></tr>
+        <tr><td>P3</td><td class="l">Residential, HP</td><td>17</td><td>0</td><td>0</td><td>8</td></tr>
+        <tr><td>P4</td><td class="l">Residential, PV</td><td>32</td><td>10</td><td>0</td><td>0</td></tr>
+      </table></div>
+    </div>
+  </div>
+  <div class="pipeline">DynLQGameTV → MpAVI.from_game → StaticGNEP → MpAVI.nabetani(β bounds) → GNESetSolver → Julia ParametricDAQP.mpsolve</div>
+  <p>The β vector has (N−1)·T·m<sub>sh</sub> entries, so the number of <em>shared</em> rows sets the size of the parametric problem. Most reductions therefore target shared constraints.</p>
+</section>
+
+<section>
+  <h2>Reduction sequence</h2>
+  <p>Exact reductions keep the feasible set of the active-power game unchanged. Approximations change the game; at each new resolution I built a fresh full-feeder reference first and compared against that.</p>
+  <div class="steps">
+    <div class="step"><div><h3>Clean local rows <span class="pill exact">exact</span></h3>
+      <p>Drop all-zero rows and keep one copy of identical inequality normals, with the tightest right-hand side. At 30 min this removed nothing (12,288 → 12,288), so the adapter had no duplicates.</p></div></div>
+    <div class="step"><div><h3>Certify redundant feeder limits <span class="pill exact">exact</span></h3>
+      <p>For each prosumer and step I computed a conservative injection interval from demand, PV, converter limits (octagon slice, cos π/8), EV availability and HP bounds. A line or voltage limit is dropped only if it holds for every injection in that envelope. All 64 flow and 64 voltage labels were certified at every step; the tightest one, <code>voltage_17_lower</code>, still keeps a margin of 0.071 p.u. Shared rows per step fell from 136 to 8, leaving only the trade-reciprocity pairs.</p></div></div>
+    <div class="step"><div><h3>Move single-owner shared rows to local <span class="pill exact">exact</span></h3>
+      <p>Rows that depend on only one player belong in that player's local set. After screening there were none (0 moved), because the 8 remaining rows each couple two traders.</p></div></div>
+    <div class="step"><div><h3>LP-implied local rows <span class="pill exact">exact</span></h3>
+      <p>One LP per local row tests whether the other local rows at that step imply it. At 4 h this removed 768 → 568 rows; cost change 3.3·10⁻¹⁰ €. This shrinks the subproblems but not β.</p></div></div>
+    <div class="step"><div><h3>Aggregate time: 30 min → 2 h → 4 h <span class="pill approx">approximation</span></h3>
+      <p>Prices and power are averaged and EV driving energy is summed. A coarse slot counts as EV-available only if the EV is present the whole time (3 mixed slots for this day). Day-1 cost rises from 77.98 € (30 min) to 78.38 € (2 h) and 80.22 € (4 h).</p></div></div>
+    <div class="step"><div><h3>Drop the 24 h lookahead <span class="pill approx">approximation</span></h3>
+      <p>At 2 h, truncating the horizon from 48 h to 24 h left every first-day cost and trajectory identical (largest difference 2.4·10⁻¹⁰ €), so the lookahead was not needed for this day.</p></div></div>
+    <div class="step"><div><h3>Relax reciprocity to ±0.01 kW <span class="pill approx">approximation</span></h3>
+      <p>Exact clearing is an equality encoded as two opposite inequalities, which <code>GNESetSolver</code> does not enumerate. I used a ±ε band for the enumeration runs.</p></div></div>
+    <div class="step"><div><h3>Spanning-tree trade graph <span class="pill approx">approximation</span></h3>
+      <p>Removing one of the four cyclic edges (4 spanning trees) lowers β from 144 to 108 at 4 h. The vGNE costs moved by at most 2.2·10⁻⁹ €, so on this day the cycle carries no extra value.</p></div></div>
+    <div class="step"><div><h3>One-community clearing + ridge <span class="pill approx">approximation</span></h3>
+      <p>I replaced the 8 bilateral rows per step with 2 community-wide rows (±0.01 kW) and added a penalty ρ = 100 on each bilateral mismatch. β went from 144 to 36. I also tested stronger input regularization to improve curvature (table below).</p></div></div>
+  </div>
+</section>
+
+<section>
+  <h2>Problem size at each stage</h2>
+  <div class="ladder" role="img" aria-label="Nabetani beta dimension per stage, logarithmic scale">
+    <div class="rung"><span class="lab">Full · 48 h / 30 min</span><span class="track"><span class="fill" style="width:100%"></span></span><span class="val">39,168</span></div>
+    <div class="rung"><span class="lab">Feeder screened · 30 min</span><span class="track"><span class="fill" style="width:73.2%"></span></span><span class="val">2,304</span></div>
+    <div class="rung approx"><span class="lab">Full · 48 h / 2 h</span><span class="track"><span class="fill" style="width:86.9%"></span></span><span class="val">9,792</span></div>
+    <div class="rung approx"><span class="lab">Screened · 48 h / 2 h</span><span class="track"><span class="fill" style="width:60.1%"></span></span><span class="val">576</span></div>
+    <div class="rung approx"><span class="lab">Screened · 24 h / 2 h, ε</span><span class="track"><span class="fill" style="width:53.5%"></span></span><span class="val">288</span></div>
+    <div class="rung approx"><span class="lab">Screened · 24 h / 4 h</span><span class="track"><span class="fill" style="width:47.0%"></span></span><span class="val">144</span></div>
+    <div class="rung approx"><span class="lab">4 h, spanning tree</span><span class="track"><span class="fill" style="width:44.3%"></span></span><span class="val">108</span></div>
+    <div class="rung approx"><span class="lab">4 h, community clearing</span><span class="track"><span class="fill" style="width:33.9%"></span></span><span class="val">36</span></div>
+    <div class="rung toy"><span class="lab">Toy · 2 P / 4 steps</span><span class="track"><span class="fill" style="width:19.7%"></span></span><span class="val">8</span></div>
+    <div class="legend"><span style="--c:var(--bar)">exact reduction</span><span style="--c:var(--approx)">includes an approximation</span><span style="--c:var(--muted)">synthetic toy</span><span>bar length: log₁₀ β</span></div>
+  </div>
+
+  <div class="tablebox"><table>
+    <tr><th>Stage</th><th>Steps</th><th>Decisions</th><th>Shared rows</th><th>β</th><th>Local rows</th><th>State rows</th></tr>
+    <tr><td>Full 30 min</td><td>96</td><td>4,224</td><td>13,056</td><td>39,168</td><td>12,288</td><td>1,350</td></tr>
+    <tr><td>Clean local 30 min</td><td>96</td><td>4,224</td><td>13,056</td><td>39,168</td><td>12,288</td><td>1,350</td></tr>
+    <tr><td>Feeder screened 30 min</td><td>96</td><td>4,224</td><td>768</td><td>2,304</td><td>12,288</td><td>1,350</td></tr>
+    <tr><td>Full feeder 2 h</td><td>24</td><td>1,056</td><td>3,264</td><td>9,792</td><td>3,072</td><td>342</td></tr>
+    <tr><td>Reduced feeder 2 h</td><td>24</td><td>1,056</td><td>192</td><td>576</td><td>3,072</td><td>342</td></tr>
+    <tr><td>24 h / 2 h, ε = 0.01 kW</td><td>12</td><td>528</td><td>96</td><td>288</td><td>1,536</td><td>174</td></tr>
+    <tr><td>24 h / 4 h, screened + LP</td><td>6</td><td>264</td><td>48</td><td>144</td><td>568</td><td>n/a</td></tr>
+    <tr><td>24 h / 4 h, community</td><td>6</td><td>264</td><td>12</td><td>36</td><td>568</td><td>n/a</td></tr>
+  </table></div>
+</section>
+
+<section>
+  <h2>Validation of each reduction</h2>
+  <p>Each stage was re-solved as a variational GNE (potential QP in Gurobi). I compared it with the unreduced game at the same resolution and with the original reactive-power centralized solver (<code>algo_central.centralized</code>).</p>
+  <div class="tablebox"><table>
+    <tr><th>Comparison</th><th>P1 €</th><th>P2 €</th><th>P3 €</th><th>P4 €</th><th>Max |Δ| €</th><th class="l">Result</th></tr>
+    <tr><td>30 min vGNE vs saved centralized</td><td>9.55805</td><td>55.00790</td><td>2.52852</td><td>10.88520</td><td>0</td><td class="l"><span class="pill exact">identical</span></td></tr>
+    <tr><td>30 min clean + screened vs full</td><td>9.55805</td><td>55.00790</td><td>2.52852</td><td>10.88520</td><td>0</td><td class="l"><span class="pill exact">identical dispatch</span></td></tr>
+    <tr><td>2 h reduced vs 2 h full vs centralized 2 h</td><td>9.83542</td><td>54.98217</td><td>2.67677</td><td>10.88298</td><td>8.8·10⁻⁹</td><td class="l"><span class="pill exact">identical trajectories</span></td></tr>
+    <tr><td>2 h, 24 h horizon vs 48 h horizon</td><td>9.8354</td><td>54.9822</td><td>2.6768</td><td>10.8830</td><td>2.4·10⁻¹⁰</td><td class="l"><span class="pill exact">identical</span></td></tr>
+    <tr><td>4 h screened vs 4 h full vs centralized 4 h</td><td>11.05078</td><td>54.98586</td><td>3.32108</td><td>10.85931</td><td>0</td><td class="l"><span class="pill exact">identical</span></td></tr>
+    <tr><td>4 h LP-pruned local rows</td><td colspan="4" class="l" style="text-align:center">as above</td><td>3.3·10⁻¹⁰</td><td class="l"><span class="pill exact">identical</span></td></tr>
+    <tr><td>4 h spanning trees (4 variants)</td><td colspan="4" class="l" style="text-align:center">as above</td><td>2.2·10⁻⁹</td><td class="l"><span class="pill exact">identical</span></td></tr>
+  </table></div>
+  <p class="note">Agreement with the centralized solver is a measured result. The centralized model includes reactive power, while the DyNECT adapter does not. On this day no feeder limit binds, so the two coincide.</p>
+</section>
+
+<section>
+  <h2>Spectrum of H + Hᵀ</h2>
+  <p>H is the Jacobian of the condensed pseudo-gradient. <code>MpAVI.nabetani</code> hands it to ParametricDAQP unchanged, so it is exactly the matrix Julia works with. Strong monotonicity of the mpAVI requires H + Hᵀ ≻ 0. The constraint reductions above never change H; only resolution, horizon, ridge and the community penalty do.</p>
+  <p>Where the curvature comes from: p_cost = 10⁻³ €/kW²h on charge, discharge, EV charge/discharge and every bilateral trade, plus the numerical ridge r on every control. Grid buy, grid sell, heat-pump power and the |trade| auxiliaries are priced linearly only.</p>
+  <div class="tablebox"><table>
+    <tr><th>Game</th><th>n</th><th>H symmetric</th><th>Cross-player blocks</th><th>λ<sub>min</sub></th><th>λ<sub>max</sub></th><th>Cond.</th><th>Flat eigenvalues</th><th>Flat on equality set</th></tr>
+    <tr><td>48 h / 30 min, r = 10⁻⁹</td><td>4,224</td><td>yes</td><td>0</td><td>2.0e-9</td><td>2.0e-3</td><td>1.0e6</td><td>1,918 (45 %)</td><td>1,343 of 2,391</td></tr>
+    <tr><td>48 h / 2 h, r = 10⁻⁹</td><td>1,056</td><td>yes</td><td>0</td><td>8.0e-9</td><td>8.0e-3</td><td>1.0e6</td><td>478 (45 %)</td><td>334 of 593</td></tr>
+    <tr><td>24 h / 2 h, ε, r = 10⁻⁹</td><td>528</td><td>yes</td><td>0</td><td>8.0e-9</td><td>8.0e-3</td><td>1.0e6</td><td>240 (45 %)</td><td>168 of 343</td></tr>
+    <tr><td>24 h / 4 h, r = 10⁻⁹</td><td>264</td><td>yes</td><td>0</td><td>1.6e-8</td><td>1.6e-2</td><td>1.0e6</td><td>120 (45 %)</td><td>84 of 145</td></tr>
+    <tr><td>24 h / 4 h community, r = 10⁻⁹</td><td>264</td><td>yes</td><td>400 (= dt·ρ)</td><td>1.6e-8</td><td>1.6e3</td><td>1.0e11</td><td>120 (45 %)</td><td>84 of 169</td></tr>
+    <tr><td>Toy 2 P / 4 steps</td><td>40</td><td>yes</td><td>0</td><td>4.0e-3</td><td>1.7</td><td>423</td><td>0</td><td>0 of 32</td></tr>
+  </table></div>
+  <p style="font-size:.9rem;color:var(--muted)">"Flat" means an eigenvalue at the ridge level 4·dt·r, i.e. curvature that comes from the ridge alone. "Equality set" means H + Hᵀ restricted to the null space of all paired equality rows of the condensed AVI: energy balance, cyclic battery charge, trade reciprocity and |trade| epigraph pairs.</p>
+  <ul>
+    <li><strong>The game is an exact potential game and, without the community penalty, fully separable.</strong> H is symmetric to 10⁻²³ and every cross-player block is zero. So H + Hᵀ = 2H, block-diagonal by player, and the vGNE is the minimizer of a single QP.</li>
+    <li><strong>The spectrum has only two levels.</strong> 45 % of the eigenvalues sit exactly at 4·dt·r and the rest at about 4·dt·(p_cost + r). The condition number is therefore p_cost / r = 10⁶ at every resolution. Aggregating time scales the whole spectrum by dt but never improves conditioning.</li>
+    <li><strong>The flat directions are exactly the linearly priced controls:</strong> |trade| auxiliaries 40 %, grid buy 20 %, grid sell 20 %, heat-pump power 20 %. That is 5 of the 11 controls per prosumer and step, which gives the 45 %.</li>
+    <li><strong>The equality constraints do not remove the flatness.</strong> On the subspace that respects energy balance, cyclic charge and reciprocity, 84 of 145 directions (4 h) and 1,343 of 2,391 (30 min) are still flat. In those directions the problem is effectively an LP perturbed by 10⁻⁹: the KKT systems ParametricDAQP solves are near-singular, and many active sets describe practically the same point.</li>
+    <li><strong>The community penalty makes conditioning worse.</strong> ρ = 100 adds eigenvalues of 1,600 along the bilateral-mismatch directions and couples players (cross blocks 400). The condition number rises from 10⁶ to 10¹¹.</li>
+    <li><strong>The toy is well-conditioned, yet it still failed.</strong> It has curvature on every control (λ<sub>min</sub> = 0.004, cond 423) and no flat directions. So flatness alone cannot explain the failed enumeration. The real games need both fixed: missing curvature, and whatever stalls the toy (most likely the degenerate reciprocity pairs and the β parameterization).</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Curvature sweep for the 4 h game</h2>
+  <p>Input regularization r adds 2·dt·r·I to each player's own input Hessian. That lifts the flat eigenvalues from 1.6·10⁻⁸ to 4·dt·r: cond 11 at r = 10⁻⁴, 2.0 at 10⁻³ and 1.1 at 10⁻². At r ≥ 10⁻³ the ridge is larger than p_cost and dominates the whole objective, which explains the 2 € cost distortion below. The community model carries the ρ = 100 mismatch penalty, which explains its large condition number. Costs are economic day-1 costs and exclude ridge and penalty terms.</p>
+  <div class="tablebox"><table>
+    <tr><th>Ridge r</th><th class="l">Model</th><th>β</th><th>λ<sub>min</sub>(H+Hᵀ)</th><th>Cond. est.</th><th>Max cost Δ vs base €</th><th>Max pair mismatch kW</th></tr>
+    <tr><td>1e-9</td><td class="l">bilateral</td><td>144</td><td>1.6e-8</td><td>1.0e6</td><td>0.000</td><td>0</td></tr>
+    <tr><td>1e-9</td><td class="l">community</td><td>36</td><td>1.6e-8</td><td>1.0e11</td><td>0.001</td><td>0.00068</td></tr>
+    <tr><td>1e-4</td><td class="l">bilateral</td><td>144</td><td>1.6e-3</td><td>11</td><td>0.106</td><td>0</td></tr>
+    <tr><td>1e-4</td><td class="l">community</td><td>36</td><td>1.6e-3</td><td>1.0e6</td><td>0.108</td><td>0.00070</td></tr>
+    <tr><td>1e-3</td><td class="l">bilateral</td><td>144</td><td>1.6e-2</td><td>2.0</td><td>2.285</td><td>0</td></tr>
+    <tr><td>1e-3</td><td class="l">community</td><td>36</td><td>1.6e-2</td><td>1.0e5</td><td>2.286</td><td>0.00082</td></tr>
+    <tr><td>1e-2</td><td class="l">bilateral</td><td>144</td><td>0.16</td><td>1.1</td><td>2.441</td><td>0</td></tr>
+    <tr><td>1e-2</td><td class="l">community</td><td>36</td><td>0.16</td><td>1.0e4</td><td>2.443</td><td>0.00175</td></tr>
+  </table></div>
+  <p>The community game reproduces its bilateral counterpart within about 0.001 €. A ridge of 10⁻³ or more distorts costs by more than 2 € per prosumer, so those games differ materially from the economic one.</p>
+</section>
+
+<section>
+  <h2>Enumeration attempts</h2>
+  <p>Every run used the unmodified <code>GNESetSolver</code> in a separate worker process with a timeout and a live log.</p>
+  <div class="tablebox"><table>
+    <tr><th class="l">Game</th><th>Decisions</th><th>m<sub>sh</sub></th><th>β</th><th class="l">Settings</th><th class="l">Outcome</th></tr>
+    <tr><td class="l">24 h / 2 h, ε = 0.01 kW, screened</td><td>528</td><td>96</td><td>288</td><td class="l">limit 2,500 / 100, β ±2</td><td class="l wrap-cell"><span class="pill fail">no output</span> 6 runs. No region was ever reported; stopped by hand after 12+ min with RAM steady at 0.74 GB.</td></tr>
+    <tr><td class="l">24 h / 4 h, bilateral, screened</td><td>264</td><td>48</td><td>144</td><td class="l">limit 100, β ±5</td><td class="l wrap-cell"><span class="pill fail">no output</span> 3 runs (2 baseline, 1 ridge). Stuck inside <code>mpsolve</code>.</td></tr>
+    <tr><td class="l">24 h / 4 h, community, ridge 1e-3</td><td>264</td><td>12</td><td>36</td><td class="l">limit 100, β ±2 and ±5</td><td class="l wrap-cell"><span class="pill fail">no output</span> 2 runs. No solver messages after 5+ min.</td></tr>
+    <tr><td class="l">Toy: 2 prosumers, 4 steps, battery + grid + 1 trade</td><td>40</td><td>8</td><td>8</td><td class="l">limit 250, β ±5</td><td class="l wrap-cell"><span class="pill fail">0 GNE regions</span> 4 runs reached <code>REGION_LIMIT</code> after 29 / 104 / 104 / 253 critical regions. 2 runs with a larger limit reached 2,177 finished regions with about 500,000 still pending.</td></tr>
+    <tr><td class="l">Toy, warm start from vGNE active set</td><td>40</td><td>8</td><td>8</td><td class="l">AS0: 37 rows, rank 37</td><td class="l wrap-cell"><span class="pill fail">no result</span> KKT residual 5·10⁻¹⁰, but the warm-started <code>mpsolve</code> was still running at 250 s when I interrupted it.</td></tr>
+  </table></div>
+  <p>The planned bottom-up ladder (2 → 4 prosumers, ring topology, |trade| auxiliaries, fixed-zero controls) was meant to isolate the failing ingredient. It stopped at stage 1, because even the 40-variable toy returned no GNE region.</p>
+</section>
+
+<section>
+  <h2>Interpretation</h2>
+  <ul>
+    <li><strong>The reductions work.</strong> Certified feeder screening alone removes 94 % of the shared rows, and nothing changes in the equilibrium. Time aggregation and dropping the lookahead add about 2.9 % to day-1 cost at 4 h.</li>
+    <li><strong>Problem size is not the bottleneck.</strong> Shrinking β by three orders of magnitude, down to 8 in a 40-variable toy, never produced a GNE region. In the toy, the pending-region queue grows by about 230 regions per finished region.</li>
+    <li><strong>Likely cause: degeneracy in the parametric problem.</strong> Reciprocity rows come in opposite pairs (or a thin ε band), with many simultaneously active local bounds, inside the β box. The Julia smoke test passes and the Nabetani matrices are finite. For the toy they are also well-conditioned: λ<sub>min</sub>(H + Hᵀ) = 0.004, cond 423. The real games are not (see the H + Hᵀ section). The 670-row AVI at 4 h has 316 active rows of rank 218 at the vGNE, so the active set is heavily degenerate.</li>
+    <li><strong>The real games are nearly flat.</strong> In 45 % of the directions, H + Hᵀ has only the 10⁻⁹ ridge as curvature: grid buy/sell, heat pump and |trade|. A curvature fix that does not distort costs would put a small physical quadratic on exactly those controls, rather than a uniform ridge that swamps p_cost. Removing the |trade| epigraph variables would also help, since they account for 40 % of the flat directions.</li>
+    <li><strong>Open questions for DyNECT:</strong> whether ParametricDAQP needs a different β parameterization or bounds for paired-equality constraints, and whether a valid AS0 for the Nabetani-transformed problem can be built from the vGNE.</li>
+  </ul>
+  <p>Because of this I stopped trying to enumerate the full GNE set. The current approach generates fair GNE candidates directly and verifies each one with unilateral best responses (see the strategic GNE selection summary).</p>
+</section>
+
+<footer>
+  Sources: <code>p2p_gradual_reduction_validation.ipynb</code>, <code>p2p_further_reduction.ipynb</code>, <code>p2p_grouped_clearing_regularization_sweep.ipynb</code>, <code>p2p_dynect_bottom_up_debugging.ipynb</code> and solver logs in <code>p2p_dynect/.gne_experiments/</code>, all in commit <code>da9dbb6</code> of <code>p2p-energy-trading-illustrative</code>. The experiment folder was removed from the working tree afterwards and can be restored from that commit.
+</footer>
+</div>

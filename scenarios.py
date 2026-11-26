@@ -1,7 +1,8 @@
-"""scenarios.py — Extract SimBench + DWD prosumer profiles for case33bw.
+"""scenarios.py — Extract SimBench + DWD prosumer profiles for the configured feeder.
 
-Builds a data dict compatible with main.py / algo.py for 4 heterogeneous
-prosumers placed at buses 5, 11, 17, 32 of case33bw.
+Builds a data dict compatible with main.py / algo_central.py / algo_ADMM.py for
+the population selected in config.py (NETWORK_TOPOLOGY, PROSUMER_SCENARIO) and
+trading graph (TRADING_TOPOLOGY). Populations live in populations/.
 
 Usage
 -----
@@ -31,6 +32,7 @@ import numpy as np
 import pandas as pd
 from importlib import import_module
 from trading import make_trading_edges
+from network import load_network
 
 from config import (
     NETWORK_TOPOLOGY,
@@ -122,7 +124,12 @@ def _load_population(topology, n_prosumers):
     if topology != 'ieee33' and topology not in SIMBENCH_CODES:
         raise ValueError(f"Unknown network topology: {topology}")
 
-    module = import_module(f'populations.{topology}')
+    name = 'ieee33' if topology == 'ieee33' else f'simbench_{topology}'
+    try:
+        module = import_module(f'populations.{name}')
+    except ModuleNotFoundError as exc:
+        raise ValueError(f"No prosumer population for network '{topology}' "
+                         f"(expected populations/{name}.py)") from exc
     available = module._PROSUMER_SCENARIOS
 
     if n_prosumers not in available:
@@ -147,6 +154,9 @@ _PROSUMERS = _load_population(
     NETWORK_TOPOLOGY,
     PROSUMER_SCENARIO,
 )
+
+# Cable rating of the selected feeder (IEEE33 keeps its original 5 MVA).
+_LINE_LIMIT_MVA = float(load_network()['line_limit_mva'])
 
 # ── Data loading helpers ───────────────────────────────────────────────────────
 
@@ -385,7 +395,7 @@ def make_scenario(season='winter', seed=42, resolution_h=0.5,
         dt            = dt,
         grid_limit    = 10.0 * max_demand,
         trade_limit   = 5.0  * max_demand,
-        line_limit_mva= 5.0,
+        line_limit_mva= _LINE_LIMIT_MVA,
         # BESS
         battery_capacity      = batt_cap,
         battery_power         = batt_pow,

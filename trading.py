@@ -2,14 +2,17 @@
 
 Trading edges connect prosumer indices, not physical bus indices.
 
-Supported topologies:
-    cyclic — ring graph
-    knn    — k-nearest neighbours by radial feeder distance
+Supported topologies (config.TRADING_TOPOLOGY):
+    cyclic        — ring graph over prosumer index order
+    knn           — k-nearest neighbours by radial feeder distance
+    sparse_hetero — sparse connected random graph with heterogeneous degrees
 """
+import random
 
 import networkx as nx
 
-from config import TRADING_TOPOLOGY, K_NEIGHBOURS
+from config import (TRADING_TOPOLOGY, K_NEIGHBOURS,
+                    SPARSE_MEAN_DEGREE, TRADING_SEED)
 from network import load_network
 
 
@@ -102,6 +105,42 @@ def knn_edges(agent_bus, k=3):
     )
 
 
+def sparse_hetero_edges(n, mean_degree=2.5, seed=42):
+    """Sparse, connected trading graph with heterogeneous degrees.
+
+    1. Preferential-attachment tree (Barabási–Albert, m = 1): every prosumer
+       joins by linking to an existing one with probability ∝ degree, which
+       gives a few well-connected hubs and many single-link prosumers.
+    2. Extra edges up to round(mean_degree · n / 2), again chosen with
+       probability ∝ degree product, so the hubs stay hubs.
+
+    The result is connected, has mean degree ≈ mean_degree (capped by the
+    complete graph) and is fully determined by (n, mean_degree, seed). It does
+    not depend on location; the trading graph is a social structure here.
+    """
+    if n < 2:
+        raise ValueError("Need at least 2 prosumers")
+    rng = random.Random(f"sparse_hetero-{n}-{seed}")
+    order = list(range(n))
+    rng.shuffle(order)                  # hub identity is random, not index 0
+    graph = nx.Graph()
+    graph.add_nodes_from(range(n))
+    graph.add_edge(order[0], order[1])
+    for new in order[2:]:
+        nodes = [v for v in graph.nodes if graph.degree(v) > 0]
+        weights = [graph.degree(v) for v in nodes]
+        graph.add_edge(new, rng.choices(nodes, weights=weights)[0])
+
+    target = min(round(mean_degree * n / 2), n * (n - 1) // 2)
+    while graph.number_of_edges() < target:
+        missing = [(i, j) for i in range(n) for j in range(i + 1, n)
+                   if not graph.has_edge(i, j)]
+        weights = [graph.degree(i) * graph.degree(j) for i, j in missing]
+        graph.add_edge(*rng.choices(missing, weights=weights)[0])
+
+    return sorted((min(i, j), max(i, j)) for i, j in graph.edges())
+
+
 def make_trading_edges(agent_bus):
     """Select the configured trading topology."""
 
@@ -110,6 +149,10 @@ def make_trading_edges(agent_bus):
 
     if TRADING_TOPOLOGY == 'knn':
         return knn_edges(agent_bus, k=K_NEIGHBOURS)
+
+    if TRADING_TOPOLOGY == 'sparse_hetero':
+        return sparse_hetero_edges(len(agent_bus), SPARSE_MEAN_DEGREE,
+                                   TRADING_SEED)
 
     raise ValueError(
         f"Unknown trading topology: {TRADING_TOPOLOGY}"

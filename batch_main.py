@@ -21,11 +21,7 @@ from algo_central  import centralized
 from algo_ADMM     import distributed
 from metrics       import no_trade_costs, compute_metrics
 from network       import evaluate_feeder
-from config import (
-    NETWORK_TOPOLOGY,
-    PROSUMER_SCENARIO,
-    TRADING_TOPOLOGY,
-)
+from config import structure_name, analysis_dates
 
 ROOT = Path(__file__).resolve().parent
 
@@ -34,16 +30,10 @@ ROOT = Path(__file__).resolve().parent
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-STRUCTURE = (
-    f'{NETWORK_TOPOLOGY}_{PROSUMER_SCENARIO}_{TRADING_TOPOLOGY}'
-)
+STRUCTURE = structure_name()   # e.g. ieee33_4_cyclic, lv5_16_knn3 (see config.py)
 
-# 7th, 14th, 21st of each month — 3 days per month, 36 total
-DATES = [
-    f'2016-{m:02d}-{d:02d}'
-    for m in range(1, 13)
-    for d in [7, 14, 21]
-]
+# 7th, 14th, 21st of each month (36 days), shifted per network (config.py)
+DATES = analysis_dates()
 
 CASES = ['centralized', 'distributed']
 

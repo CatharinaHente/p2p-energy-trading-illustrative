@@ -8,7 +8,12 @@ prosumer trading graph.
 | `main.py` | Explicit inputs, four examples and checks in `# %%` cells |
 | `prosumer.py` | One `add_prosumer()` function: energy balance, trades, batteries and cost |
 | `network.py` | Imports pandapower `case33bw()` and builds multi-period LinDistFlow constraints |
-| `algo.py` | Centralized optimization and distributed consensus ADMM |
+| `algo_central.py` / `algo_ADMM.py` | Centralized optimization and distributed consensus ADMM |
+| `batch_main.py` | Batch simulations over dates for a `structures/<network>` setup |
+| `scenarios.py`, `pricing.py`, `trading.py`, `config.py` | Scenario data, prices, trading graph, global settings |
+| `strategic_GNE_selection/` | Fair GNE selection on the bilateral game (see its README); includes the `p2p/` LQ game adapter |
+| `docs/` | Summaries: `dynect_reductions.html` (DyNECT reductions), `gne_selection.html` (fair GNE selection), `networks_scenarios.html` (networks, populations, trading graphs) |
+| `populations/` | Prosumer populations per network (IEEE33 + SimBench lv3/lv5/lv6, N = 4, 8, 16, 32) |
 
 ## Run
 
